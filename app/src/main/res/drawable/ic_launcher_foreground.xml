@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Candlestick 1 (Green Bullish) -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M34,44 h6 v22 h-6 z" />
+    <path
+        android:strokeColor="#10B981"
+        android:strokeWidth="1.5"
+        android:pathData="M37,36 L37,44 M37,66 L37,74" />
+
+    <!-- Candlestick 2 (Red Bearish) -->
+    <path
+        android:fillColor="#EF4444"
+        android:pathData="M51,50 h6 v18 h-6 z" />
+    <path
+        android:strokeColor="#EF4444"
+        android:strokeWidth="1.5"
+        android:pathData="M54,42 L54,50 M54,68 L54,76" />
+
+    <!-- Candlestick 3 (Green Surge) -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M68,36 h6 v24 h-6 z" />
+    <path
+        android:strokeColor="#10B981"
+        android:strokeWidth="1.5"
+        android:pathData="M71,28 L71,36 M71,60 L71,68" />
+
+    <!-- Trend line / Indicator Pulse Line -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M30,62 L42,52 L54,58 L68,40 L78,32" />
+
+    <!-- Trading Arrow Pulse Indicator -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M78,32 L72,32 L78,38 z" />
+</vector>
