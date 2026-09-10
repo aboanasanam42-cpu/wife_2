@@ -4,6 +4,7 @@ Runs continuous background worker loop with signal handling, state persistence,
 dynamic RSI + EMA strategy evaluation, Stop-Loss / Take-Profit tracking, and Telegram alerts.
 """
 
+import logging
 import os
 import sys
 import json
