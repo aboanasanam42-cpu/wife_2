@@ -1,6 +1,7 @@
 """
 Configuration Module for MEXC Spot Trading Bot.
 Handles environment variable loading, validation, and logging setup.
+Supports dynamic volatility scalping: Bollinger Bands, ATR, and Trailing Stops.
 """
 
 import os
@@ -36,15 +37,21 @@ class TradingConfig:
     timeframe: str
     poll_interval_seconds: int
 
-    # Strategy Parameters (RSI + 20-period EMA)
+    # Strategy Parameters (Bollinger Bands + RSI + ATR)
+    bollinger_period: int
+    bollinger_std: float
     rsi_period: int
     rsi_oversold: float
     rsi_overbought: float
+    atr_period: int
     ema_period: int
 
-    # Risk Management
+    # Risk Management & Dynamic Trailing
     stop_loss_pct: float
     take_profit_pct: float
+    trailing_stop_activation_pct: float
+    trailing_stop_offset_pct: float
+    atr_multiplier_sl: float
     max_slippage_pct: float
     max_open_trades: int
 
@@ -86,9 +93,18 @@ class TradingConfig:
         poll_interval_str = os.getenv("CHECK_INTERVAL_SECONDS") or os.getenv("POLL_INTERVAL_SECONDS", "30")
         poll_interval = int(poll_interval_str)
 
+        # Dynamic Volatility Scalping (Bollinger Bands)
+        bollinger_period = int(os.getenv("BOLLINGER_PERIOD", "20"))
+        bollinger_std = float(os.getenv("BOLLINGER_STD", "2.0"))
+
+        # RSI Parameters
         rsi_period = int(os.getenv("RSI_PERIOD", "14"))
         rsi_oversold = float(os.getenv("RSI_OVERSOLD", "30.0"))
         rsi_overbought = float(os.getenv("RSI_OVERBOUGHT", "70.0"))
+
+        # ATR & EMA
+        atr_period = int(os.getenv("ATR_PERIOD", "14"))
+        atr_multiplier_sl = float(os.getenv("ATR_MULTIPLIER_SL", "1.5"))
         ema_period = int(os.getenv("EMA_PERIOD", "20"))
 
         # Risk Management: support STOP_LOSS_PERCENT (1.5 -> 0.015) or STOP_LOSS_PCT (0.015)
@@ -105,6 +121,15 @@ class TradingConfig:
             tp_val = float(os.getenv("TAKE_PROFIT_PCT", "0.025"))
             take_profit_pct = tp_val / 100.0 if tp_val > 0.5 else tp_val
 
+        # Trailing Take-Profit Parameters
+        # Support TRAILING_STOP_ACTIVATION_PCT (e.g. 1.0 -> 0.01)
+        trail_act_raw = float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "1.0"))
+        trailing_stop_activation_pct = trail_act_raw / 100.0 if trail_act_raw > 0.05 else trail_act_raw
+
+        # Support TRAILING_STOP_OFFSET_PCT (e.g. 0.5 -> 0.005)
+        trail_offset_raw = float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.5"))
+        trailing_stop_offset_pct = trail_offset_raw / 100.0 if trail_offset_raw > 0.05 else trail_offset_raw
+
         max_slippage_pct = float(os.getenv("MAX_SLIPPAGE_PCT", "0.005"))
         max_open_trades = int(os.getenv("MAX_OPEN_TRADES", "1"))
         log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
@@ -118,12 +143,18 @@ class TradingConfig:
             trade_amount_usdt=trade_amount_usdt,
             timeframe=timeframe,
             poll_interval_seconds=poll_interval,
+            bollinger_period=bollinger_period,
+            bollinger_std=bollinger_std,
             rsi_period=rsi_period,
             rsi_oversold=rsi_oversold,
             rsi_overbought=rsi_overbought,
+            atr_period=atr_period,
             ema_period=ema_period,
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
+            trailing_stop_activation_pct=trailing_stop_activation_pct,
+            trailing_stop_offset_pct=trailing_stop_offset_pct,
+            atr_multiplier_sl=atr_multiplier_sl,
             max_slippage_pct=max_slippage_pct,
             max_open_trades=max_open_trades,
             simulation_mode=simulation_mode,

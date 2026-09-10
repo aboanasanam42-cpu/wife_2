@@ -482,15 +482,21 @@ fun MexcTradingApp() {
                             CHECK_INTERVAL_SECONDS=30
                             POLL_INTERVAL_SECONDS=30
 
-                            # Strategy Parameters (RSI + 20 EMA)
+                            # Strategy Parameters (Bollinger Bands + RSI + ATR)
+                            BOLLINGER_PERIOD=20
+                            BOLLINGER_STD=2.0
                             RSI_PERIOD=14
                             RSI_OVERSOLD=30
                             RSI_OVERBOUGHT=70
+                            ATR_PERIOD=14
+                            ATR_MULTIPLIER_SL=1.5
                             EMA_PERIOD=20
 
-                            # Risk Management & Limits
+                            # Risk Management & Trailing Engine
                             TAKE_PROFIT_PERCENT=$takeProfitPct
                             STOP_LOSS_PERCENT=$stopLossPct
+                            TRAILING_STOP_ACTIVATION_PCT=1.0
+                            TRAILING_STOP_OFFSET_PCT=0.5
                             MAX_OPEN_TRADES=1
                             MAX_SLIPPAGE_PCT=0.005
                             LOG_LEVEL=INFO

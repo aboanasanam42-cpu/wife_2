@@ -145,10 +145,10 @@ if __name__ == "__main__":
         ),
         PythonFileItem(
             name = "strategy.py",
-            description = "Calculates RSI(14) & 20 EMA, evaluates trend filters, dynamic oversold/overbought, Stop-Loss & Take-Profit targets.",
-            badge = "TA Strategy",
+            description = "Dynamic Volatility Scalping: Bollinger Bands (%B), RSI, ATR Dynamic Stop-Loss, and Trailing Take-Profit Engine.",
+            badge = "Scalp Strategy",
             code = """
-# strategy.py - Technical Indicators & Signal Generation
+# strategy.py - Dynamic Volatility Scalping (Bollinger + ATR + Trailing)
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -161,55 +161,78 @@ class TradeSignal:
     price: float
     reason: str
     rsi_value: float
-    ema_value: float
+    bb_upper: float
+    bb_middle: float
+    bb_lower: float
+    bb_pct_b: float
+    atr_value: float
     suggested_sl: Optional[float] = None
     suggested_tp: Optional[float] = None
+    trailing_activation: Optional[float] = None
 
 class SpotStrategy:
-    def __init__(self, rsi_period=14, rsi_oversold=30.0, rsi_overbought=70.0, ema_period=20, stop_loss_pct=0.02, take_profit_pct=0.04):
+    def __init__(self, bollinger_period=20, bollinger_std=2.0, rsi_period=14, rsi_oversold=30.0, rsi_overbought=70.0, atr_period=14, atr_multiplier_sl=1.5, stop_loss_pct=0.015, take_profit_pct=0.025, trailing_stop_activation_pct=0.01, trailing_stop_offset_pct=0.005, ema_period=20):
+        self.bollinger_period = bollinger_period
+        self.bollinger_std = bollinger_std
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
-        self.ema_period = ema_period
+        self.atr_period = atr_period
+        self.atr_multiplier_sl = atr_multiplier_sl
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.trailing_stop_activation_pct = trailing_stop_activation_pct
+        self.trailing_stop_offset_pct = trailing_stop_offset_pct
+        self.ema_period = ema_period
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df[f"EMA_{self.ema_period}"] = df["close"].ewm(span=self.ema_period, adjust=False).mean()
-        delta = df["close"].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1.0/self.rsi_period, min_periods=self.rsi_period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1.0/self.rsi_period, min_periods=self.rsi_period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df[f"RSI_{self.rsi_period}"] = (100 - (100 / (1 + rs))).fillna(50.0)
+        close = df["close"]
+        bb_mid = close.rolling(self.bollinger_period).mean()
+        bb_std = close.rolling(self.bollinger_period).std(ddof=0)
+        df["BBM"] = bb_mid
+        df["BBU"] = bb_mid + (self.bollinger_std * bb_std)
+        df["BBL"] = bb_mid - (self.bollinger_std * bb_std)
+        df["BBP"] = ((close - df["BBL"]) / (df["BBU"] - df["BBL"]).replace(0, np.nan)).fillna(0.5)
+
+        # RSI
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0.0).ewm(alpha=1.0/self.rsi_period, min_periods=self.rsi_period, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1.0/self.rsi_period, min_periods=self.rsi_period, adjust=False).mean()
+        rs = gain / loss.replace(0, np.nan)
+        df["RSI"] = (100 - (100 / (1 + rs))).fillna(50.0)
+
+        # ATR
+        tr = pd.concat([df["high"] - df["low"], (df["high"] - close.shift(1)).abs(), (df["low"] - close.shift(1)).abs()], axis=1).max(axis=1)
+        df["ATR"] = tr.ewm(alpha=1.0/self.atr_period, min_periods=self.atr_period, adjust=False).mean()
         return df
 
     def evaluate_signals(self, df: pd.DataFrame, current_position: Optional[dict] = None) -> TradeSignal:
         latest = df.iloc[-1]
-        previous = df.iloc[-2]
         close = float(latest["close"])
-        rsi = float(latest[f"RSI_{self.rsi_period}"])
-        prev_rsi = float(previous[f"RSI_{self.rsi_period}"])
-        ema = float(latest[f"EMA_{self.ema_period}"])
+        rsi = float(latest["RSI"])
+        bbu, bbm, bbl, bbp = float(latest["BBU"]), float(latest["BBM"]), float(latest["BBL"]), float(latest["BBP"])
+        atr = float(latest["ATR"]) if not pd.isna(latest["ATR"]) else close * 0.01
 
         if current_position and current_position.get("active"):
-            entry_price = float(current_position["entry_price"])
-            sl = entry_price * (1.0 - self.stop_loss_pct)
-            tp = entry_price * (1.0 + self.take_profit_pct)
+            entry = float(current_position["entry_price"])
+            sl = float(current_position.get("stop_loss", entry * (1 - self.stop_loss_pct)))
+            tp = float(current_position.get("take_profit", entry * (1 + self.take_profit_pct)))
             if close <= sl:
-                return TradeSignal("SELL", close, f"Stop-Loss hit ({close:.2f} <= {sl:.2f})", rsi, ema)
+                return TradeSignal("SELL", close, f"SL/Trailing Floor hit (${'$'}{close:.2f} <= ${'$'}{sl:.2f})", rsi, bbu, bbm, bbl, bbp, atr)
             if close >= tp:
-                return TradeSignal("SELL", close, f"Take-Profit hit ({close:.2f} >= {tp:.2f})", rsi, ema)
-            if rsi >= self.rsi_overbought:
-                return TradeSignal("SELL", close, f"RSI Overbought ({rsi:.1f})", rsi, ema)
-            return TradeSignal("HOLD", close, "Holding active position", rsi, ema)
+                return TradeSignal("SELL", close, f"TP Ceiling hit (${'$'}{close:.2f} >= ${'$'}{tp:.2f})", rsi, bbu, bbm, bbl, bbp, atr)
+            if (bbp >= 0.95 or close >= bbu) and rsi >= self.rsi_overbought:
+                return TradeSignal("SELL", close, f"Peak Exhaustion (%B={bbp:.2f}, RSI={rsi:.1f})", rsi, bbu, bbm, bbl, bbp, atr)
+            return TradeSignal("HOLD", close, f"Holding Spot (SL: ${'$'}{sl:.2f})", rsi, bbu, bbm, bbl, bbp, atr)
 
-        if close >= ema and (rsi <= self.rsi_oversold or (prev_rsi <= self.rsi_oversold and rsi > prev_rsi)):
-            return TradeSignal("BUY", close, "RSI Oversold + Price > 20 EMA", rsi, ema, close*(1-self.stop_loss_pct), close*(1+self.take_profit_pct))
+        # Buy Dip Condition
+        if bbp <= 0.05 and rsi <= self.rsi_oversold:
+            dyn_sl = close - (self.atr_multiplier_sl * atr)
+            dyn_tp = close * (1 + self.take_profit_pct)
+            return TradeSignal("BUY", close, f"Dip Detected (%B={bbp:.2f}, RSI={rsi:.1f}, ATR=${'$'}{atr:.2f})", rsi, bbu, bbm, bbl, bbp, atr, dyn_sl, dyn_tp)
 
-        return TradeSignal("HOLD", close, "Awaiting valid trigger", rsi, ema)
+        return TradeSignal("HOLD", close, "Scanning for Volatility Dips", rsi, bbu, bbm, bbl, bbp, atr)
             """.trimIndent()
         ),
         PythonFileItem(
@@ -299,12 +322,18 @@ class TradingConfig:
     trade_amount_usdt: float
     timeframe: str
     poll_interval_seconds: int
+    bollinger_period: int
+    bollinger_std: float
     rsi_period: int
     rsi_oversold: float
     rsi_overbought: float
+    atr_period: int
     ema_period: int
     stop_loss_pct: float
     take_profit_pct: float
+    trailing_stop_activation_pct: float
+    trailing_stop_offset_pct: float
+    atr_multiplier_sl: float
     max_slippage_pct: float
     max_open_trades: int
     simulation_mode: bool
@@ -325,12 +354,18 @@ class TradingConfig:
             trade_amount_usdt=float(os.getenv("TRADE_AMOUNT_USDT", "15.0")),
             timeframe=os.getenv("TIMEFRAME", "15m"),
             poll_interval_seconds=poll_sec,
+            bollinger_period=int(os.getenv("BOLLINGER_PERIOD", "20")),
+            bollinger_std=float(os.getenv("BOLLINGER_STD", "2.0")),
             rsi_period=int(os.getenv("RSI_PERIOD", "14")),
             rsi_oversold=float(os.getenv("RSI_OVERSOLD", "30.0")),
             rsi_overbought=float(os.getenv("RSI_OVERBOUGHT", "70.0")),
+            atr_period=int(os.getenv("ATR_PERIOD", "14")),
             ema_period=int(os.getenv("EMA_PERIOD", "20")),
             stop_loss_pct=sl,
             take_profit_pct=tp,
+            trailing_stop_activation_pct=float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "1.0")) / 100.0,
+            trailing_stop_offset_pct=float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.5")) / 100.0,
+            atr_multiplier_sl=float(os.getenv("ATR_MULTIPLIER_SL", "1.5")),
             max_slippage_pct=float(os.getenv("MAX_SLIPPAGE_PCT", "0.005")),
             max_open_trades=int(os.getenv("MAX_OPEN_TRADES", "1")),
             simulation_mode=os.getenv("SIMULATION_MODE", "False").lower() in ("true", "1"),
