@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import ccxt
 import pandas as pd
@@ -27,6 +27,49 @@ class MexcSpotClient:
             return
         self.markets = self.exchange.load_markets()
         logger.info("MEXC Spot connected; %d markets loaded.", len(self.markets))
+
+    def select_top_usdt_symbols(self, count: int = 4) -> List[str]:
+        """Select active USDT spot pairs automatically by current 24h quote volume.
+
+        Only markets explicitly marked active/spot with USDT as quote are considered.
+        Stablecoin-vs-stablecoin pairs and leveraged/contract-like symbols are excluded.
+        """
+        if self.simulation_mode:
+            # Simulation remains deterministic and does not need live market discovery.
+            return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"][:max(1, count)]
+        if not self.markets:
+            self.markets = self.exchange.load_markets()
+
+        candidates = []
+        for symbol, market in self.markets.items():
+            if market.get("quote") != "USDT":
+                continue
+            if market.get("spot") is False or market.get("active") is False:
+                continue
+            base = str(market.get("base") or "").upper()
+            if base in {"USDT", "USDC", "FDUSD", "DAI", "TUSD", "USDE", "USD1"}:
+                continue
+            if not market.get("symbol", "").endswith("/USDT"):
+                continue
+            candidates.append(symbol)
+
+        if not candidates:
+            raise RuntimeError("No active MEXC Spot USDT markets were found for automatic selection.")
+
+        tickers = self.exchange.fetch_tickers(candidates)
+        ranked = []
+        for symbol in candidates:
+            ticker = tickers.get(symbol) or {}
+            quote_volume = float(ticker.get("quoteVolume") or 0.0)
+            last = float(ticker.get("last") or 0.0)
+            if quote_volume > 0 and last > 0:
+                ranked.append((quote_volume, symbol))
+        ranked.sort(reverse=True)
+        selected = [symbol for _, symbol in ranked[:max(1, count)]]
+        if not selected:
+            raise RuntimeError("MEXC returned no usable USDT volume data for automatic pair selection.")
+        logger.info("Automatic pair selection: %s", ", ".join(selected))
+        return selected
 
     def get_spot_balance(self, currency: str = "USDT") -> float:
         currency = currency.upper()
