@@ -1,15 +1,18 @@
 """
-Configuration Module for MEXC Spot Multi-Slot Engine.
+Configuration Module for MEXC Spot Multi-Slot Multi-Pair Scanner Engine.
 Handles environment variables with robust legacy key fallbacks and strict defaults.
+Supports comma-separated trading pairs (e.g., 'SOL/USDT,DOGE/USDT').
 """
 
 import os
 import logging
-from dataclasses import dataclass
-from typing import Optional
-from dotenv import load_dotenv
-
-load_dotenv()
+from dataclasses import dataclass, field
+from typing import Optional, List
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 def setup_logger(name: str) -> logging.Logger:
@@ -26,7 +29,7 @@ def setup_logger(name: str) -> logging.Logger:
 class TradingConfig:
     mexc_api_key: str
     mexc_api_secret: str
-    trade_symbol: str = "BTC/USDT"
+    trade_symbols: List[str] = field(default_factory=lambda: ["SOL/USDT", "DOGE/USDT"])
     timeframe: str = "1m"
     poll_interval_seconds: int = 15
     log_level: str = "INFO"
@@ -37,7 +40,7 @@ class TradingConfig:
     slot_size_usdt: float = 4.0
     initial_max_slots: int = 2
     cash_reserve_usdt: float = 2.0
-    min_slot_price_diff_pct: float = 0.8  # Inter-slot price distance (default: 0.8%)
+    min_slot_price_diff_pct: float = 0.8  # Inter-slot price distance for the same asset (default: 0.8%)
 
     # Strategy Parameters (Bollinger Bands %B + Fast RSI + ATR)
     bollinger_period: int = 20
@@ -58,6 +61,11 @@ class TradingConfig:
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
+    @property
+    def trade_symbol(self) -> str:
+        """Backward compatibility accessor returning primary pair."""
+        return self.trade_symbols[0] if self.trade_symbols else "SOL/USDT"
+
     @classmethod
     def load_from_env(cls) -> "TradingConfig":
         api_key = os.getenv("MEXC_API_KEY", "").strip()
@@ -68,11 +76,20 @@ class TradingConfig:
         if not simulation_mode and (not api_key or not api_secret):
             raise ValueError("MEXC_API_KEY and MEXC_API_SECRET must be set in environment variables.")
 
-        # 1. Pair Mapping: Read TRADE_SYMBOL first, fallback to PAIR (default: "BTC/USDT")
-        trade_symbol = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR", "BTC/USDT")
-        trade_symbol = trade_symbol.strip().upper()
-        if "/" not in trade_symbol:
-            trade_symbol = f"{trade_symbol}/USDT"
+        # 1. Multi-Pair Parsing: Read TRADE_SYMBOL first, fallback to PAIR (default: "SOL/USDT,DOGE/USDT")
+        raw_pairs = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR") or "SOL/USDT,DOGE/USDT"
+        parsed_symbols: List[str] = []
+        for item in raw_pairs.split(","):
+            s = item.strip().upper()
+            if not s:
+                continue
+            if "/" not in s:
+                s = f"{s}/USDT"
+            if s not in parsed_symbols:
+                parsed_symbols.append(s)
+
+        if not parsed_symbols:
+            parsed_symbols = ["SOL/USDT", "DOGE/USDT"]
 
         # 2. Slot Sizing: Read SLOT_SIZE_USDT first, fallback to TRADE_AMOUNT_USDT (default: 4.0)
         raw_slot_size = os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT", "4.0")
@@ -119,7 +136,7 @@ class TradingConfig:
         return cls(
             mexc_api_key=api_key,
             mexc_api_secret=api_secret,
-            trade_symbol=trade_symbol,
+            trade_symbols=parsed_symbols,
             timeframe=timeframe,
             poll_interval_seconds=poll_interval_seconds,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper().strip(),

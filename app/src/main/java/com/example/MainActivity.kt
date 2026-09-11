@@ -150,19 +150,19 @@ fun MexcTradingApp() {
     val apiClient = remember { MexcApiClient() }
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    var selectedSymbol by remember { mutableStateOf("BTCUSDT") }
+    var selectedSymbol by remember { mutableStateOf("SOLUSDT") }
     var isRefreshing by remember { mutableStateOf(false) }
 
     // Live Ticker State
     var ticker by remember {
         mutableStateOf(
             TickerInfo(
-                symbol = "BTC/USDT",
-                lastPrice = 64250.0,
-                high24h = 65400.0,
-                low24h = 63100.0,
-                volume24h = 14205.8,
-                changePercent24h = 1.84
+                symbol = "SOL/USDT",
+                lastPrice = 145.20,
+                high24h = 152.00,
+                low24h = 138.50,
+                volume24h = 184500.0,
+                changePercent24h = 3.42
             )
         )
     }
@@ -202,8 +202,9 @@ fun MexcTradingApp() {
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.exchange", "Connecting to MEXC Spot API with enableRateLimit=True..."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.exchange", "Loaded 2,418 Spot markets successfully."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.notifier", "Telegram Notifier active. Dispatched startup alert to Chat 987654321."),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "Fetched 100 closed 15m candles for BTC/USDT."),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "Cycle: BTC/USDT | Close: $64,250.00 | RSI: 28.4 | 20 EMA: $63,980.00 | Signal: BUY (RSI oversold & Price > EMA)")
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "Multi-Pair Scanner monitoring: SOL/USDT, DOGE/USDT (Slot Size: $4.00 USDT, Reserve: $2.00 USDT)"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[SOL/USDT] Close: $145.20 | %B: 0.12 | RSI: 32.1 | ATR: 1.4500 | Signal: BUY (%B <= 0.15 & RSI <= 36.0)"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[DOGE/USDT] Close: $0.1245 | %B: 0.44 | RSI: 48.6 | ATR: 0.0032 | Signal: HOLD")
         )
     }
 
@@ -475,9 +476,9 @@ fun MexcTradingApp() {
                             TELEGRAM_BOT_TOKEN=$telegramToken
                             TELEGRAM_CHAT_ID=$telegramChatId
 
-                            # Trading Configuration (Fast Scalping)
-                            TRADE_SYMBOL=$selectedSymbol
-                            # Fallback support: PAIR=$selectedSymbol
+                            # Trading Configuration (Multi-Pair Concurrent Scanner)
+                            TRADE_SYMBOL=SOL/USDT,DOGE/USDT
+                            # Fallback support: PAIR=SOL/USDT,DOGE/USDT
                             TIMEFRAME=1m
                             CHECK_INTERVAL_SECONDS=15
 
@@ -559,7 +560,7 @@ fun MonitorTab(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("BTCUSDT" to "BTC/USDT", "ETHUSDT" to "ETH/USDT", "SOLUSDT" to "SOL/USDT").forEach { (code, label) ->
+            listOf("SOLUSDT" to "SOL/USDT", "DOGEUSDT" to "DOGE/USDT", "BTCUSDT" to "BTC/USDT").forEach { (code, label) ->
                 val isSelected = selectedSymbol == code
                 Box(
                     modifier = Modifier

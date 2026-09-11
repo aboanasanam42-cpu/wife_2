@@ -23,6 +23,7 @@ class SignalResult:
     percent_b: float
     atr_value: float
     reason: str
+    symbol: Optional[str] = None
     suggested_sl: Optional[float] = None
     suggested_tp: Optional[float] = None
     target_slot_id: Optional[str] = None
@@ -121,18 +122,19 @@ class SpotStrategy:
             )
         return None
 
-    def evaluate_entry_decoupling(self, current_price: float, active_slots: List[Dict[str, Any]]) -> tuple[bool, str]:
-        for slot in active_slots:
+    def evaluate_entry_decoupling(self, current_price: float, active_slots: List[Dict[str, Any]], symbol: Optional[str] = None) -> tuple[bool, str]:
+        same_asset_slots = [s for s in active_slots if s.get("active") and (not symbol or s.get("symbol") == symbol)]
+        for slot in same_asset_slots:
             entry_p = float(slot.get("entry_price", 0.0))
             if entry_p <= 0: continue
             diff_pct = abs(current_price - entry_p) / entry_p * 100.0
             if diff_pct < self.min_slot_price_diff_pct:
-                return False, f"Anti-Clustering: ${'$'}{current_price:,.2f} is only {diff_pct:.2f}% from {slot.get('slot_id')} entry."
+                return False, f"Anti-Clustering ({symbol}): ${'$'}{current_price:,.4f} is only {diff_pct:.2f}% from {slot.get('slot_id')} entry."
         return True, "Decoupled."
 
-    def evaluate_entry_signal(self, df: pd.DataFrame, active_slots: List[Dict[str, Any]], available_slot_id: Optional[str]) -> SignalResult:
+    def evaluate_entry_signal(self, symbol: str, df: pd.DataFrame, active_slots: List[Dict[str, Any]], available_slot_id: Optional[str]) -> SignalResult:
         if available_slot_id is None:
-            return SignalResult("HOLD", float(df.iloc[-1]["close"]), float(df.iloc[-1]["rsi"]), float(df.iloc[-1]["bb_percent_b"]), float(df.iloc[-1]["atr"]), "All slots full.")
+            return SignalResult("HOLD", float(df.iloc[-1]["close"]), float(df.iloc[-1]["rsi"]), float(df.iloc[-1]["bb_percent_b"]), float(df.iloc[-1]["atr"]), "All slots full.", symbol=symbol)
 
         last = df.iloc[-1]
         prev = df.iloc[-2]
@@ -141,13 +143,12 @@ class SpotStrategy:
         pct_b = float(last["bb_percent_b"])
         atr = float(last["atr"])
 
-        is_dip = (pct_b < 0.10) or (float(prev["bb_percent_b"]) <= 0.05 and pct_b > float(prev["bb_percent_b"]))
-        is_rsi_oversold = rsi <= (self.rsi_oversold + 5.0)
+        is_dip = (pct_b < 0.15 and rsi <= self.rsi_oversold) or (float(prev["bb_percent_b"]) <= 0.05 and pct_b > float(prev["bb_percent_b"]) and rsi <= self.rsi_oversold + 4.0)
 
-        if is_dip and is_rsi_oversold:
-            can_enter, decouple_reason = self.evaluate_entry_decoupling(current_price, active_slots)
+        if is_dip:
+            can_enter, decouple_reason = self.evaluate_entry_decoupling(current_price, active_slots, symbol=symbol)
             if not can_enter:
-                return SignalResult("HOLD", current_price, rsi, pct_b, atr, decouple_reason)
+                return SignalResult("HOLD", current_price, rsi, pct_b, atr, decouple_reason, symbol=symbol)
 
             dynamic_sl = current_price - max(1.5 * atr, current_price * self.stop_loss_pct)
             dynamic_tp = current_price + max(2.5 * atr, current_price * self.take_profit_pct)
@@ -157,13 +158,14 @@ class SpotStrategy:
                 rsi_value=rsi,
                 percent_b=pct_b,
                 atr_value=atr,
+                symbol=symbol,
                 suggested_sl=dynamic_sl,
                 suggested_tp=dynamic_tp,
-                reason=f"Multi-Slot Buy for {available_slot_id}: %B={pct_b:.2f}, RSI={rsi:.1f}",
+                reason=f"Dip Signal on {symbol} for {available_slot_id}: %B={pct_b:.2f}, RSI={rsi:.1f}",
                 target_slot_id=available_slot_id,
             )
 
-        return SignalResult("HOLD", current_price, rsi, pct_b, atr, "Scanning market for dip.")
+        return SignalResult("HOLD", current_price, rsi, pct_b, atr, f"Scanning {symbol} for micro-dip.", symbol=symbol)
             """.trimIndent()
         ),
         PythonFileItem(
@@ -214,7 +216,7 @@ class MexcMultiSlotBot:
         for i in range(1, self.max_allowed_slots + 1):
             sid = f"slot_{i}"
             if sid not in self.slots:
-                self.slots[sid] = {"active": False, "slot_id": sid, "entry_price": 0.0, "amount": 0.0, "cost_usdt": 0.0, "highest_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0}
+                self.slots[sid] = {"active": False, "slot_id": sid, "symbol": "", "entry_price": 0.0, "amount": 0.0, "cost_usdt": 0.0, "highest_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0}
 
     def _setup_signals(self):
         def handle(signum, frame):
@@ -233,6 +235,7 @@ class MexcMultiSlotBot:
                     self.realized_pnl_usdt = float(d.get("realized_pnl_usdt", 0.0))
                     for sid, sdata in d.get("slots", {}).items():
                         self.slots[sid] = sdata
+                        self.slots[sid].setdefault("symbol", "")
                     self._init_slots()
             except Exception as e:
                 logger.error(f"State load error: {e}")
@@ -240,7 +243,7 @@ class MexcMultiSlotBot:
     def _save_state(self):
         with open(STATE_FILE, "w") as f:
             json.dump({
-                "symbol": self.config.trade_symbol,
+                "symbols": self.config.trade_symbols,
                 "slot_size_usdt": self.config.slot_size_usdt,
                 "max_allowed_slots": self.max_allowed_slots,
                 "realized_pnl_usdt": self.realized_pnl_usdt,
@@ -248,10 +251,10 @@ class MexcMultiSlotBot:
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }, f, indent=2)
 
-    def _update_compounding_capacity(self, price):
+    def _update_compounding_capacity(self, latest_prices):
         try:
             free_usdt = self.client.get_spot_balance("USDT")
-            in_slots_val = sum(s.get("amount", 0.0) * price for s in self.slots.values() if s.get("active"))
+            in_slots_val = sum(s.get("amount", 0.0) * (latest_prices.get(s.get("symbol", "")) or s.get("entry_price", 0.0)) for s in self.slots.values() if s.get("active"))
             equity = free_usdt + in_slots_val
             available = max(0.0, equity - self.config.cash_reserve_usdt)
             calc_slots = math.floor(available / self.config.slot_size_usdt)
@@ -265,9 +268,9 @@ class MexcMultiSlotBot:
         except Exception as e:
             logger.warning(f"Equity check failed: {e}")
 
-    def _update_trailing_stops(self, price):
+    def _update_trailing_stops_for_symbol(self, symbol, price):
         for sid, slot in self.slots.items():
-            if not slot.get("active"): continue
+            if not slot.get("active") or slot.get("symbol") != symbol: continue
             ep = slot["entry_price"]
             hp = max(slot.get("highest_price", ep), price)
             slot["highest_price"] = hp
@@ -291,50 +294,59 @@ class MexcMultiSlotBot:
                 time.sleep(1)
 
     def _iteration(self):
-        df = self.client.fetch_closed_ohlcv(self.config.trade_symbol, self.config.timeframe)
-        df_ind = self.strategy.calculate_indicators(df)
-        last = df_ind.iloc[-1]
-        price, rsi, pct_b = float(last["close"]), float(last["rsi"]), float(last["bb_percent_b"])
+        latest_prices = {}
+        for symbol in self.config.trade_symbols:
+            try:
+                df = self.client.fetch_closed_ohlcv(symbol, self.config.timeframe)
+                df_ind = self.strategy.calculate_indicators(df)
+                last = df_ind.iloc[-1]
+                price, rsi, pct_b = float(last["close"]), float(last["rsi"]), float(last["bb_percent_b"])
+                latest_prices[symbol] = price
 
-        self._update_compounding_capacity(price)
-        self._update_trailing_stops(price)
+                self._update_trailing_stops_for_symbol(symbol, price)
 
-        # Independent Exits
-        for slot in list(self.slots.values()):
-            if not slot.get("active"): continue
-            sig = self.strategy.evaluate_slot_exit(slot["slot_id"], slot, price, rsi, pct_b)
-            if sig and sig.action == "SELL":
-                self._execute_exit(slot["slot_id"], sig)
+                # Independent Exits for slots holding this asset
+                for slot in list(self.slots.values()):
+                    if not slot.get("active") or slot.get("symbol") != symbol: continue
+                    sig = self.strategy.evaluate_slot_exit(slot["slot_id"], slot, price, rsi, pct_b, symbol=symbol)
+                    if sig and sig.action == "SELL":
+                        self._execute_exit(slot["slot_id"], sig)
 
-        # Entries
-        avail_id = next((f"slot_{i}" for i in range(1, self.max_allowed_slots + 1) if not self.slots.get(f"slot_{i}", {}).get("active")), None)
-        active_list = [s for s in self.slots.values() if s.get("active")]
-        if avail_id:
-            sig = self.strategy.evaluate_entry_signal(df_ind, active_list, avail_id)
-            if sig.action == "BUY" and sig.target_slot_id:
-                self._execute_entry(sig)
+                # Dynamic Entry Evaluation
+                avail_id = next((f"slot_{i}" for i in range(1, self.max_allowed_slots + 1) if not self.slots.get(f"slot_{i}", {}).get("active")), None)
+                active_list = [s for s in self.slots.values() if s.get("active")]
+                if avail_id:
+                    sig = self.strategy.evaluate_entry_signal(symbol, df_ind, active_list, avail_id)
+                    if sig.action == "BUY" and sig.target_slot_id:
+                        self._execute_entry(sig)
+            except Exception as e:
+                logger.warning(f"Error scanning {symbol}: {e}")
+
+        self._update_compounding_capacity(latest_prices)
 
     def _execute_entry(self, sig):
         sid = sig.target_slot_id
-        order = self.client.execute_market_buy(self.config.trade_symbol, self.config.slot_size_usdt)
+        symbol = sig.symbol or self.config.trade_symbol
+        order = self.client.execute_market_buy(symbol, self.config.slot_size_usdt)
         self.slots[sid] = {
-            "active": True, "slot_id": sid, "entry_price": order["price"], "highest_price": order["price"],
+            "active": True, "slot_id": sid, "symbol": symbol, "entry_price": order["price"], "highest_price": order["price"],
             "amount": order["amount"], "cost_usdt": order["cost"], "entry_time": datetime.now(timezone.utc).isoformat(),
             "stop_loss": sig.suggested_sl or (order["price"] * (1.0 - self.config.stop_loss_pct)),
             "take_profit": sig.suggested_tp or (order["price"] * (1.0 + self.config.take_profit_pct)),
         }
         self._save_state()
-        self.notifier.notify_slot_buy(sid, self.config.trade_symbol, order["price"], order["amount"], order["cost"], sum(1 for s in self.slots.values() if s.get("active")), self.max_allowed_slots, sig.reason)
+        self.notifier.notify_slot_buy(sid, symbol, order["price"], order["amount"], order["cost"], sum(1 for s in self.slots.values() if s.get("active")), self.max_allowed_slots, sig.reason)
 
     def _execute_exit(self, sid, sig):
         slot = self.slots[sid]
-        order = self.client.execute_market_sell(self.config.trade_symbol, slot["amount"])
+        symbol = slot.get("symbol") or self.config.trade_symbol
+        order = self.client.execute_market_sell(symbol, slot["amount"])
         pnl = order["cost"] - slot["cost_usdt"]
         pnl_pct = ((order["price"] - slot["entry_price"]) / slot["entry_price"]) * 100.0
         self.realized_pnl_usdt += pnl
-        self.slots[sid] = {"active": False, "slot_id": sid, "entry_price": 0.0, "amount": 0.0, "cost_usdt": 0.0, "highest_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0}
+        self.slots[sid] = {"active": False, "slot_id": sid, "symbol": "", "entry_price": 0.0, "amount": 0.0, "cost_usdt": 0.0, "highest_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0}
         self._save_state()
-        self.notifier.notify_slot_sell(sid, self.config.trade_symbol, order["price"], order["amount"], order["cost"], pnl_pct, pnl, sum(1 for s in self.slots.values() if s.get("active")), self.max_allowed_slots, self.realized_pnl_usdt, sig.reason)
+        self.notifier.notify_slot_sell(sid, symbol, order["price"], order["amount"], order["cost"], pnl_pct, pnl, sum(1 for s in self.slots.values() if s.get("active")), self.max_allowed_slots, self.realized_pnl_usdt, sig.reason)
 
 if __name__ == "__main__":
     cfg = TradingConfig.load_from_env()
@@ -359,7 +371,7 @@ load_dotenv()
 class TradingConfig:
     mexc_api_key: str
     mexc_api_secret: str
-    trade_symbol: str = "BTC/USDT"
+    trade_symbols: list[str] = field(default_factory=lambda: ["SOL/USDT", "DOGE/USDT"])
     timeframe: str = "15m"
     poll_interval_seconds: int = 30
     log_level: str = "INFO"
@@ -369,13 +381,13 @@ class TradingConfig:
     slot_size_usdt: float = 4.0
     initial_max_slots: int = 2
     cash_reserve_usdt: float = 2.0
-    min_slot_price_diff_pct: float = 1.0
+    min_slot_price_diff_pct: float = 0.8
 
     bollinger_period: int = 20
     bollinger_std: float = 2.0
     rsi_period: int = 14
-    rsi_oversold: float = 30.0
-    rsi_overbought: float = 70.0
+    rsi_oversold: float = 36.0
+    rsi_overbought: float = 68.0
     ema_period: int = 20
     atr_period: int = 14
 
@@ -383,21 +395,24 @@ class TradingConfig:
     take_profit_pct: float = 0.03
     trailing_stop_activation_pct: float = 0.008
     trailing_stop_offset_pct: float = 0.003
-    rsi_oversold: float = 36.0
-    rsi_overbought: float = 68.0
 
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
+    @property
+    def trade_symbol(self) -> str:
+        return self.trade_symbols[0] if self.trade_symbols else "SOL/USDT"
+
     @classmethod
     def load_from_env(cls) -> "TradingConfig":
-        symbol = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR", "BTC/USDT")
+        raw_symbol = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR", "SOL/USDT,DOGE/USDT")
+        pairs = [p.strip().upper() for p in raw_symbol.split(",") if p.strip()] or ["SOL/USDT", "DOGE/USDT"]
         slot_sz = float(os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT", "4.0"))
         max_s = int(os.getenv("INITIAL_MAX_SLOTS") or os.getenv("MAX_OPEN_TRADES", "2"))
         return cls(
             mexc_api_key=os.getenv("MEXC_API_KEY", "").strip(),
             mexc_api_secret=os.getenv("MEXC_API_SECRET", "").strip(),
-            trade_symbol=symbol.strip().upper(),
+            trade_symbols=pairs,
             timeframe=os.getenv("TIMEFRAME", "1m").strip(),
             poll_interval_seconds=int(os.getenv("CHECK_INTERVAL_SECONDS") or os.getenv("POLL_INTERVAL_SECONDS", "15")),
             slot_size_usdt=slot_sz,

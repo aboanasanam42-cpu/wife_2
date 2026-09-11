@@ -1,13 +1,15 @@
 """
-MEXC 24/7 Automated Spot Trading Bot - Independent Multi-Slot Engine.
+MEXC 24/7 Automated Spot Trading Bot - Multi-Pair Multi-Slot Compounding Engine.
 Production-ready core execution engine for Railway (wife_2).
 
 Key Features:
-1. Slot Decoupling: Persistent state in bot_state.json with independent order execution per slot.
-2. Auto-Compounding Scaling: Dynamically uncaps slot_3, slot_4, ... based on total portfolio equity.
-3. Execution Precision & Minimums: Formats quantity via exchange.amount_to_precision(symbol, amount).
-4. Anti-Clustering Decoupling: Prevents duplicate entries within MIN_SLOT_PRICE_DIFF_PCT.
-5. Continuous 24/7 Resilience: Signal handling (SIGTERM/SIGINT) and CCXT network/exchange error recovery.
+1. Multi-Pair Multi-Slot Scanner: Concurrently monitors configured trading pairs (e.g. SOL/USDT, DOGE/USDT)
+   and allocates independent $4.00 USDT slots to whichever asset triggers a valid dip signal first.
+2. Slot Decoupling: Persistent state in bot_state.json with independent order execution and symbol tracking per slot.
+3. Auto-Compounding Scaling: Dynamically uncaps slot_3, slot_4, ... based on total portfolio equity.
+4. Execution Precision & Minimums: Formats quantity via exchange.amount_to_precision(symbol, amount).
+5. Anti-Clustering Decoupling: Prevents duplicate entries within MIN_SLOT_PRICE_DIFF_PCT for the same asset.
+6. Continuous 24/7 Resilience: Signal handling (SIGTERM/SIGINT) and CCXT network/exchange error recovery.
 """
 
 import os
@@ -40,7 +42,7 @@ class MexcMultiSlotBot:
 
         # Core Multi-Slot State Structure:
         # {
-        #   "slot_1": {"active": False, "slot_id": "slot_1", "entry_price": 0.0, "amount": 0.0, ...},
+        #   "slot_1": {"active": False, "slot_id": "slot_1", "symbol": "", "entry_price": 0.0, "amount": 0.0, ...},
         #   "slot_2": ...
         # }
         self.slots: Dict[str, Dict[str, Any]] = {}
@@ -84,6 +86,7 @@ class MexcMultiSlotBot:
                 self.slots[slot_id] = {
                     "active": False,
                     "slot_id": slot_id,
+                    "symbol": "",
                     "entry_price": 0.0,
                     "amount": 0.0,
                     "cost_usdt": 0.0,
@@ -123,6 +126,7 @@ class MexcMultiSlotBot:
                     for slot_id, slot_data in loaded_slots.items():
                         self.slots[slot_id] = slot_data
                         self.slots[slot_id]["slot_id"] = slot_id
+                        self.slots[slot_id].setdefault("symbol", "")
 
                     # Ensure all slots up to max_allowed_slots exist
                     self._initialize_default_slots()
@@ -142,7 +146,7 @@ class MexcMultiSlotBot:
         """Persists multi-slot dictionary and lifetime metrics to bot_state.json."""
         try:
             state_data = {
-                "symbol": self.config.trade_symbol,
+                "symbols": self.config.trade_symbols,
                 "slot_size_usdt": self.config.slot_size_usdt,
                 "max_allowed_slots": self.max_allowed_slots,
                 "realized_pnl_usdt": self.realized_pnl_usdt,
@@ -155,10 +159,10 @@ class MexcMultiSlotBot:
         except Exception as e:
             logger.error("Failed saving multi-slot state: %s", e)
 
-    def _update_compounding_capacity(self, current_price: float):
+    def _update_compounding_capacity(self, latest_prices: Dict[str, float]):
         """
         Auto-Compounding Scaling:
-        Live portfolio equity = Free USDT + Total Active Slots Market Value.
+        Live portfolio equity = Free USDT + Total Active Slots Market Value across all traded assets.
         Uncap and dynamically create slot_3, slot_4, etc., whenever available equity exceeds:
         (Active Slots Count + 1) * SLOT_SIZE_USDT + CASH_RESERVE_USDT.
         """
@@ -174,12 +178,13 @@ class MexcMultiSlotBot:
             if slot.get("active"):
                 active_slots_count += 1
                 token_qty = float(slot.get("amount", 0.0))
-                total_slot_market_value += token_qty * current_price
+                sym = slot.get("symbol", "")
+                sym_price = latest_prices.get(sym) or float(slot.get("entry_price", 0.0))
+                total_slot_market_value += token_qty * sym_price
 
         total_portfolio_equity = free_usdt + total_slot_market_value
 
         # Calculate dynamic slot threshold
-        # Max capacity can scale whenever (total_portfolio_equity - CASH_RESERVE_USDT) / SLOT_SIZE_USDT supports more slots
         available_equity = max(0.0, total_portfolio_equity - self.config.cash_reserve_usdt)
         calculated_slots = math.floor(available_equity / self.config.slot_size_usdt)
 
@@ -208,15 +213,15 @@ class MexcMultiSlotBot:
             except Exception as e:
                 logger.warning("Telegram expansion notification failed: %s", e)
 
-    def _update_trailing_stops_per_slot(self, current_price: float):
+    def _update_trailing_stops_for_symbol(self, symbol: str, current_price: float):
         """
-        Per-Slot Independent Trailing Take-Profit:
-        - Tracks highest price seen for each open slot.
+        Per-Slot Independent Trailing Take-Profit for a specific asset:
+        - Tracks highest price seen for each open slot holding this symbol.
         - When profit >= TRAILING_STOP_ACTIVATION_PCT (default +0.8%), sets floor at
           highest_price * (1.0 - TRAILING_STOP_OFFSET_PCT).
         """
         for slot_id, slot in self.slots.items():
-            if not slot.get("active"):
+            if not slot.get("active") or slot.get("symbol") != symbol:
                 continue
 
             entry_price = float(slot["entry_price"])
@@ -236,8 +241,9 @@ class MexcMultiSlotBot:
                 if new_trailing_floor > current_sl:
                     slot["stop_loss"] = new_trailing_floor
                     logger.info(
-                        "[%s] Trailing Stop Floor Raised to $%.2f (Highest: $%.2f, Gain: +%.2f%%)",
+                        "[%s (%s)] Trailing Floor Raised to $%.4f (Highest: $%.4f, Gain: +%.2f%%)",
                         slot_id,
+                        symbol,
                         new_trailing_floor,
                         highest_price,
                         gain_pct * 100.0,
@@ -259,11 +265,11 @@ class MexcMultiSlotBot:
 
     def start(self):
         """Main entry point for 24/7 background execution on Railway."""
-        logger.info("Starting MEXC Multi-Slot Compounding Engine (Railway 24/7)...")
+        logger.info("Starting MEXC Multi-Pair Multi-Slot Scanner Engine (Railway 24/7)...")
         active_slots = self.get_active_slots()
         logger.info(
-            "Pair: %s | Slot Size: $%.2f USDT | Active Slots: %d/%d | Reserve: $%.2f USDT | Interval: %ds",
-            self.config.trade_symbol,
+            "Pairs: %s | Slot Size: $%.2f USDT | Active Slots: %d/%d | Reserve: $%.2f USDT | Interval: %ds",
+            ", ".join(self.config.trade_symbols),
             self.config.slot_size_usdt,
             len(active_slots),
             self.max_allowed_slots,
@@ -273,7 +279,7 @@ class MexcMultiSlotBot:
 
         try:
             self.notifier.notify_startup({
-                "trade_symbol": self.config.trade_symbol,
+                "trade_symbols": self.config.trade_symbols,
                 "slot_size_usdt": self.config.slot_size_usdt,
                 "active_slots": len(active_slots),
                 "max_slots": self.max_allowed_slots,
@@ -314,67 +320,96 @@ class MexcMultiSlotBot:
         logger.info("Multi-slot worker shutdown complete.")
 
     def _iteration(self):
-        """Single execution cycle."""
-        symbol = self.config.trade_symbol
+        """
+        Single execution cycle:
+        Iterates through all configured pairs (e.g. SOL/USDT, DOGE/USDT),
+        updates trailing stops, tests exits for slots holding that pair,
+        and triggers entry into any idle slot on valid dip signals.
+        """
+        latest_prices: Dict[str, float] = {}
 
-        # 1. Fetch closed candles and compute vectorized indicators
-        df = self.client.fetch_closed_ohlcv(symbol=symbol, timeframe=self.config.timeframe, limit=100)
-        df_indicators = self.strategy.calculate_indicators(df)
+        for symbol in self.config.trade_symbols:
+            try:
+                # 1. Fetch closed candles and compute vectorized indicators
+                df = self.client.fetch_closed_ohlcv(symbol=symbol, timeframe=self.config.timeframe, limit=100)
+                df_indicators = self.strategy.calculate_indicators(df)
 
-        last_row = df_indicators.iloc[-1]
-        current_price = float(last_row["close"])
-        rsi = float(last_row["rsi"])
-        pct_b = float(last_row["bb_percent_b"])
-        atr = float(last_row["atr"])
+                last_row = df_indicators.iloc[-1]
+                current_price = float(last_row["close"])
+                rsi = float(last_row["rsi"])
+                pct_b = float(last_row["bb_percent_b"])
+                atr = float(last_row["atr"])
 
-        # 2. Dynamic Equity Tracking & Compounding Scaling
-        self._update_compounding_capacity(current_price)
+                latest_prices[symbol] = current_price
 
-        # 3. Update Dynamic Trailing Stops for each open slot
-        self._update_trailing_stops_per_slot(current_price)
+                # 2. Update dynamic trailing stops for slots holding this specific symbol
+                self._update_trailing_stops_for_symbol(symbol, current_price)
 
-        # 4. Independent Exit Checks for all active slots
-        active_slots = self.get_active_slots()
-        for slot in list(active_slots):
-            slot_id = slot["slot_id"]
-            exit_signal = self.strategy.evaluate_slot_exit(slot_id, slot, current_price, rsi, pct_b)
-            if exit_signal and exit_signal.action == "SELL":
-                self._execute_slot_exit(slot_id, exit_signal)
+                # 3. Independent Exit Checks for slots holding this specific symbol
+                for slot in list(self.get_active_slots()):
+                    if slot.get("symbol") == symbol:
+                        slot_id = slot["slot_id"]
+                        exit_signal = self.strategy.evaluate_slot_exit(
+                            slot_id=slot_id,
+                            slot=slot,
+                            current_price=current_price,
+                            rsi=rsi,
+                            pct_b=pct_b,
+                            symbol=symbol,
+                        )
+                        if exit_signal and exit_signal.action == "SELL":
+                            self._execute_slot_exit(slot_id, exit_signal)
 
-        # 5. Entry Evaluation for Available Slots
-        available_slot_id = self.get_first_available_slot()
-        remaining_active_slots = self.get_active_slots()
+                # 4. Entry Evaluation for Available Slots on this symbol
+                available_slot_id = self.get_first_available_slot()
+                active_slots = self.get_active_slots()
 
-        # Log cycle status heartbeat
+                entry_signal = self.strategy.evaluate_entry_signal(
+                    symbol=symbol,
+                    df=df_indicators,
+                    active_slots=active_slots,
+                    available_slot_id=available_slot_id,
+                )
+
+                logger.info(
+                    "[%s] Close: $%.4f | %%B: %.2f | RSI: %.1f | ATR: %.4f | Action: %s",
+                    symbol,
+                    current_price,
+                    pct_b,
+                    rsi,
+                    atr,
+                    entry_signal.action,
+                )
+
+                if entry_signal.action == "BUY" and entry_signal.target_slot_id:
+                    self._execute_slot_entry(entry_signal)
+
+            except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+                logger.warning("[%s] Exchange error during poll: %s", symbol, e)
+            except Exception as e:
+                logger.error("[%s] Unexpected error during pair evaluation: %s", symbol, e)
+
+        # 5. Dynamic Equity Tracking & Compounding Scaling across all held assets
+        self._update_compounding_capacity(latest_prices)
+
+        # 6. Heartbeat status logging across all slots
+        active_slots_list = self.get_active_slots()
         slot_status_str = " | ".join(
-            f"{s_id}: {'$'+str(round(s['entry_price'], 1)) if s.get('active') else 'IDLE'}"
+            f"{s_id} ({s.get('symbol', 'N/A')}): ${round(s['entry_price'], 4)}" if s.get("active")
+            else f"{s_id}: IDLE"
             for s_id, s in self.slots.items()
         )
         logger.info(
-            "[%s] Close: $%.2f | %%B: %.2f | RSI: %.1f | ATR: %.2f | Slots [%d/%d]: %s",
-            symbol,
-            current_price,
-            pct_b,
-            rsi,
-            atr,
-            len(remaining_active_slots),
+            "Cycle scan complete. Active Slots [%d/%d]: %s",
+            len(active_slots_list),
             self.max_allowed_slots,
             slot_status_str,
         )
 
-        if available_slot_id is not None:
-            entry_signal = self.strategy.evaluate_entry_signal(
-                df=df_indicators,
-                active_slots=remaining_active_slots,
-                available_slot_id=available_slot_id,
-            )
-            if entry_signal.action == "BUY" and entry_signal.target_slot_id:
-                self._execute_slot_entry(entry_signal)
-
     def _execute_slot_entry(self, signal_res: SignalResult):
         """Executes a Spot Market BUY order strictly allocated to the designated slot."""
         slot_id = signal_res.target_slot_id
-        symbol = self.config.trade_symbol
+        symbol = signal_res.symbol or self.config.trade_symbol
         amount_usdt = self.config.slot_size_usdt
 
         # Check cash reserve in live mode
@@ -383,8 +418,8 @@ class MexcMultiSlotBot:
                 free_usdt = self.client.get_spot_balance("USDT")
                 if free_usdt < (amount_usdt + self.config.cash_reserve_usdt):
                     logger.warning(
-                        "Skipping entry for %s: Free USDT ($%.2f) below required ($%.2f + $%.2f reserve)",
-                        slot_id, free_usdt, amount_usdt, self.config.cash_reserve_usdt
+                        "Skipping entry for %s (%s): Free USDT ($%.2f) below required ($%.2f + $%.2f reserve)",
+                        slot_id, symbol, free_usdt, amount_usdt, self.config.cash_reserve_usdt
                     )
                     return
             except Exception as e:
@@ -407,6 +442,7 @@ class MexcMultiSlotBot:
             self.slots[slot_id] = {
                 "active": True,
                 "slot_id": slot_id,
+                "symbol": symbol,
                 "entry_price": exec_price,
                 "highest_price": exec_price,
                 "amount": filled_amount,
@@ -420,9 +456,10 @@ class MexcMultiSlotBot:
 
             active_count = len(self.get_active_slots())
             logger.info(
-                "🟢 %s FILLED: %.6f tokens at $%.2f (Cost: $%.2f USDT). Active Slots: %d/%d",
+                "🟢 %s FILLED: %.6f %s at $%.4f (Cost: $%.2f USDT). Active Slots: %d/%d",
                 slot_id.upper(),
                 filled_amount,
+                symbol,
                 exec_price,
                 cost,
                 active_count,
@@ -444,9 +481,9 @@ class MexcMultiSlotBot:
                 logger.warning("Telegram slot buy notification failed: %s", e)
 
         except Exception as e:
-            logger.error("Failed to execute slot buy for %s: %s", slot_id, e)
+            logger.error("Failed to execute slot buy for %s on %s: %s", slot_id, symbol, e)
             try:
-                self.notifier.notify_error(f"Slot Buy Failed ({slot_id})", str(e))
+                self.notifier.notify_error(f"Slot Buy Failed ({slot_id} - {symbol})", str(e))
             except Exception:
                 pass
 
@@ -460,7 +497,7 @@ class MexcMultiSlotBot:
         if not slot or not slot.get("active"):
             return
 
-        symbol = self.config.trade_symbol
+        symbol = slot.get("symbol") or signal_res.symbol or self.config.trade_symbol
         raw_token_qty = float(slot.get("amount", 0.0))
         entry_cost = float(slot.get("cost_usdt", 0.0))
         entry_price = float(slot.get("entry_price", 0.0))
@@ -474,7 +511,10 @@ class MexcMultiSlotBot:
             except Exception as prec_err:
                 logger.debug("Precision formatting fallback: %s", prec_err)
 
-        logger.info("Closing %s: Placing Market SELL for %.6f tokens. Reason: %s", slot_id, token_qty, signal_res.reason)
+        logger.info(
+            "Closing %s: Placing Market SELL for %.6f %s. Reason: %s",
+            slot_id, token_qty, symbol, signal_res.reason
+        )
 
         try:
             order = self.client.execute_market_sell(
@@ -495,6 +535,7 @@ class MexcMultiSlotBot:
             self.slots[slot_id] = {
                 "active": False,
                 "slot_id": slot_id,
+                "symbol": "",
                 "entry_price": 0.0,
                 "amount": 0.0,
                 "cost_usdt": 0.0,
@@ -508,8 +549,9 @@ class MexcMultiSlotBot:
 
             active_count = len(self.get_active_slots())
             logger.info(
-                "💰 %s CLOSED: PnL: %+.2f USDT (%+.2f%%). Remaining Active Slots: %d/%d. Lifetime PnL: $%.2f USDT",
+                "💰 %s (%s) CLOSED: PnL: %+.2f USDT (%+.2f%%). Remaining Active Slots: %d/%d. Lifetime PnL: $%.2f USDT",
                 slot_id.upper(),
+                symbol,
                 pnl_usdt,
                 pnl_pct,
                 active_count,
@@ -535,9 +577,9 @@ class MexcMultiSlotBot:
                 logger.warning("Telegram slot sell notification failed: %s", e)
 
         except Exception as e:
-            logger.error("Failed to execute slot exit for %s: %s", slot_id, e)
+            logger.error("Failed to execute slot exit for %s on %s: %s", slot_id, symbol, e)
             try:
-                self.notifier.notify_error(f"Slot Exit Failed ({slot_id})", str(e))
+                self.notifier.notify_error(f"Slot Exit Failed ({slot_id} - {symbol})", str(e))
             except Exception:
                 pass
 

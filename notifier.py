@@ -53,9 +53,15 @@ class TelegramNotifier:
 
     def notify_startup(self, config_summary: Dict[str, Any]):
         """Dispatched when the multi-slot bot boots or restarts on Railway."""
+        symbols = config_summary.get("trade_symbols")
+        if isinstance(symbols, list):
+            symbol_str = ", ".join(symbols)
+        else:
+            symbol_str = str(symbols or config_summary.get("trade_symbol", "SOL/USDT, DOGE/USDT"))
+
         msg = (
             "🚀 <b>MEXC Multi-Slot Compounding Scalper Started</b>\n\n"
-            f"• <b>Pair:</b> <code>{config_summary.get('trade_symbol')}</code>\n"
+            f"• <b>Pairs:</b> <code>{symbol_str}</code>\n"
             f"• <b>Slot Size:</b> <code>${config_summary.get('slot_size_usdt', 4.0):.2f} USDT</code>\n"
             f"• <b>Active Slots:</b> <code>{config_summary.get('active_slots', 0)} / {config_summary.get('max_slots', 2)}</code>\n"
             f"• <b>Cash Reserve:</b> <code>${config_summary.get('cash_reserve_usdt', 2.0):.2f} USDT</code>\n"

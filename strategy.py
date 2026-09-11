@@ -1,7 +1,7 @@
 """
-Scalping Strategy Engine for MEXC Spot Independent Multi-Slot Execution.
+Scalping Strategy Engine for MEXC Spot Independent Multi-Slot Multi-Pair Execution.
 Computes vectorized Bollinger Bands (%B), Fast RSI (14), EMA, and ATR (14).
-Evaluates precision dip triggers and individual slot trailing/hard exits.
+Evaluates precision dip triggers and individual slot trailing/hard exits across multiple assets.
 """
 
 from dataclasses import dataclass
@@ -21,6 +21,7 @@ class SignalResult:
     percent_b: float
     atr_value: float
     reason: str
+    symbol: Optional[str] = None
     suggested_sl: Optional[float] = None
     suggested_tp: Optional[float] = None
     target_slot_id: Optional[str] = None
@@ -95,14 +96,20 @@ class SpotStrategy:
         current_price: float,
         rsi: float,
         pct_b: float,
+        symbol: Optional[str] = None,
     ) -> Optional[SignalResult]:
         """
         Evaluates an individual active slot for immediate exit triggers:
         1. Trailing stop floor breached or Hard Stop-Loss (-2.0%) breached
-        2. Base Take-Profit reached
+        2. Base Take-Profit reached (+3.0%)
         3. Overbought exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT
         """
         if not slot.get("active"):
+            return None
+
+        slot_symbol = slot.get("symbol") or symbol or "UNKNOWN"
+        # If symbol parameter is supplied and does not match the slot's traded symbol, skip
+        if symbol and slot.get("symbol") and slot.get("symbol") != symbol:
             return None
 
         entry_price = float(slot["entry_price"])
@@ -116,7 +123,7 @@ class SpotStrategy:
         if current_price <= sl_price:
             is_trailing = highest_price > (entry_price * 1.005)
             label = "Trailing Stop Floor Hit" if is_trailing else "Hard Stop-Loss (-2.0%) Hit"
-            reason = f"{label} on {slot_id} at ${current_price:,.2f} (Floor: ${sl_price:,.2f}, PnL: {pnl_pct:+.2f}%)"
+            reason = f"{label} on {slot_id} ({slot_symbol}) at ${current_price:,.4f} (Floor: ${sl_price:,.4f}, PnL: {pnl_pct:+.2f}%)"
             return SignalResult(
                 action="SELL",
                 price=current_price,
@@ -124,12 +131,13 @@ class SpotStrategy:
                 percent_b=pct_b,
                 atr_value=0.0,
                 reason=reason,
+                symbol=slot_symbol,
                 target_slot_id=slot_id,
             )
 
         # 2. Hard Take-Profit Target Reached
         if current_price >= tp_price:
-            reason = f"Take-Profit Target Hit on {slot_id} at ${current_price:,.2f} (Target: ${tp_price:,.2f}, PnL: {pnl_pct:+.2f}%)"
+            reason = f"Take-Profit Target Hit on {slot_id} ({slot_symbol}) at ${current_price:,.4f} (Target: ${tp_price:,.4f}, PnL: {pnl_pct:+.2f}%)"
             return SignalResult(
                 action="SELL",
                 price=current_price,
@@ -137,13 +145,14 @@ class SpotStrategy:
                 percent_b=pct_b,
                 atr_value=0.0,
                 reason=reason,
+                symbol=slot_symbol,
                 target_slot_id=slot_id,
             )
 
         # 3. Overbought Peak Exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT
         if pct_b >= 0.95 and rsi >= self.rsi_overbought and pnl_pct > 0.0:
             reason = (
-                f"Overbought Exhaustion Exit on {slot_id} at ${current_price:,.2f} "
+                f"Overbought Exhaustion Exit on {slot_id} ({slot_symbol}) at ${current_price:,.4f} "
                 f"(%B: {pct_b:.2f} >= 0.95, RSI: {rsi:.1f} >= {self.rsi_overbought:.1f}, PnL: {pnl_pct:+.2f}%)"
             )
             return SignalResult(
@@ -153,6 +162,7 @@ class SpotStrategy:
                 percent_b=pct_b,
                 atr_value=0.0,
                 reason=reason,
+                symbol=slot_symbol,
                 target_slot_id=slot_id,
             )
 
@@ -162,29 +172,43 @@ class SpotStrategy:
         self,
         current_price: float,
         active_slots: List[Dict[str, Any]],
+        symbol: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Anti-Clustering Check:
-        Prevents opening a new slot at the same candle or price if another slot entered within MIN_SLOT_PRICE_DIFF_PCT.
+        Prevents opening a new slot for the SAME symbol at the same candle or price if
+        another slot entered that asset within MIN_SLOT_PRICE_DIFF_PCT.
+        Does not block entries for different symbols (e.g., SOL slot does not block DOGE slot).
         """
         if not active_slots:
             return True, "No active slots. Entry clear."
 
-        for slot in active_slots:
+        # Filter active slots that hold this exact symbol
+        same_symbol_slots = [
+            s for s in active_slots
+            if s.get("active") and (not symbol or s.get("symbol") == symbol)
+        ]
+
+        if not same_symbol_slots:
+            return True, f"No active slots holding {symbol or 'this asset'}. Entry clear."
+
+        for slot in same_symbol_slots:
             entry_p = float(slot.get("entry_price", 0.0))
             if entry_p <= 0:
                 continue
             diff_pct = abs(current_price - entry_p) / entry_p * 100.0
             if diff_pct < self.min_slot_price_diff_pct:
                 return False, (
-                    f"Anti-Clustering block: Current price ${current_price:,.2f} is {diff_pct:.2f}% "
-                    f"from {slot.get('slot_id')} entry (${entry_p:,.2f}). Requires >={self.min_slot_price_diff_pct:.1f}% spacing."
+                    f"Anti-Clustering block: Current price ${current_price:,.4f} is {diff_pct:.2f}% "
+                    f"from {slot.get('slot_id')} entry (${entry_p:,.4f}) for {symbol}. "
+                    f"Requires >={self.min_slot_price_diff_pct:.1f}% spacing."
                 )
 
-        return True, "Anti-clustering decoupling verified. Entry price separated adequately."
+        return True, f"Anti-clustering decoupling verified for {symbol}. Entry price separated adequately."
 
     def evaluate_entry_signal(
         self,
+        symbol: str,
         df: pd.DataFrame,
         active_slots: List[Dict[str, Any]],
         available_slot_id: Optional[str],
@@ -203,6 +227,7 @@ class SpotStrategy:
                 rsi_value=float(df.iloc[-1]["rsi"]),
                 percent_b=float(df.iloc[-1]["bb_percent_b"]),
                 atr_value=float(df.iloc[-1]["atr"]),
+                symbol=symbol,
                 reason="All permissible slots currently occupied. Waiting for an exit.",
             )
 
@@ -224,8 +249,8 @@ class SpotStrategy:
         if dip_trigger or divergence_trigger:
             trigger_type = "Dip Trigger (%B<=0.15 & RSI<=oversold)" if dip_trigger else "Bullish Divergence Reversal"
 
-            # Verify Anti-Clustering spacing against all open slots
-            can_enter, decouple_reason = self.evaluate_entry_decoupling(current_price, active_slots)
+            # Verify Anti-Clustering spacing against open slots holding this symbol
+            can_enter, decouple_reason = self.evaluate_entry_decoupling(current_price, active_slots, symbol=symbol)
             if not can_enter:
                 return SignalResult(
                     action="HOLD",
@@ -233,6 +258,7 @@ class SpotStrategy:
                     rsi_value=rsi,
                     percent_b=pct_b,
                     atr_value=atr,
+                    symbol=symbol,
                     reason=decouple_reason,
                 )
 
@@ -241,8 +267,8 @@ class SpotStrategy:
             dynamic_tp = current_price + max(2.5 * atr, current_price * self.take_profit_pct)
 
             reason = (
-                f"{trigger_type} for {available_slot_id}: %B={pct_b:.2f}, RSI={rsi:.1f}, ATR={atr:.2f}. "
-                f"Decoupled from {len(active_slots)} active slots."
+                f"{trigger_type} for {available_slot_id} on {symbol}: %B={pct_b:.2f}, RSI={rsi:.1f}, ATR={atr:.4f}. "
+                f"Decoupled from existing slots."
             )
             return SignalResult(
                 action="BUY",
@@ -250,6 +276,7 @@ class SpotStrategy:
                 rsi_value=rsi,
                 percent_b=pct_b,
                 atr_value=atr,
+                symbol=symbol,
                 suggested_sl=dynamic_sl,
                 suggested_tp=dynamic_tp,
                 reason=reason,
@@ -262,5 +289,6 @@ class SpotStrategy:
             rsi_value=rsi,
             percent_b=pct_b,
             atr_value=atr,
-            reason=f"Scanning for micro-dips (%B: {pct_b:.2f}, RSI: {rsi:.1f}, ATR: {atr:.2f})",
+            symbol=symbol,
+            reason=f"Scanning {symbol} for micro-dips (%B: {pct_b:.2f}, RSI: {rsi:.1f}, ATR: {atr:.4f})",
         )
