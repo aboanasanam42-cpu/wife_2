@@ -31,15 +31,15 @@ class SpotStrategy:
     def __init__(
         self,
         rsi_period: int = 14,
-        rsi_oversold: float = 30.0,
-        rsi_overbought: float = 70.0,
+        rsi_oversold: float = 36.0,
+        rsi_overbought: float = 68.0,
         ema_period: int = 20,
         bollinger_period: int = 20,
         bollinger_std: float = 2.0,
         atr_period: int = 14,
         stop_loss_pct: float = 0.02,
         take_profit_pct: float = 0.03,
-        min_slot_price_diff_pct: float = 1.0,
+        min_slot_price_diff_pct: float = 0.8,
     ):
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
@@ -381,24 +381,33 @@ class TradingConfig:
 
     stop_loss_pct: float = 0.02
     take_profit_pct: float = 0.03
-    trailing_stop_activation_pct: float = 0.012
-    trailing_stop_offset_pct: float = 0.005
+    trailing_stop_activation_pct: float = 0.008
+    trailing_stop_offset_pct: float = 0.003
+    rsi_oversold: float = 36.0
+    rsi_overbought: float = 68.0
 
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
     @classmethod
     def load_from_env(cls) -> "TradingConfig":
+        symbol = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR", "BTC/USDT")
+        slot_sz = float(os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT", "4.0"))
+        max_s = int(os.getenv("INITIAL_MAX_SLOTS") or os.getenv("MAX_OPEN_TRADES", "2"))
         return cls(
             mexc_api_key=os.getenv("MEXC_API_KEY", "").strip(),
             mexc_api_secret=os.getenv("MEXC_API_SECRET", "").strip(),
-            trade_symbol=os.getenv("TRADE_SYMBOL", "BTC/USDT").strip().upper(),
-            slot_size_usdt=float(os.getenv("SLOT_SIZE_USDT", "4.0")),
-            initial_max_slots=int(os.getenv("INITIAL_MAX_SLOTS", "2")),
+            trade_symbol=symbol.strip().upper(),
+            timeframe=os.getenv("TIMEFRAME", "1m").strip(),
+            poll_interval_seconds=int(os.getenv("CHECK_INTERVAL_SECONDS") or os.getenv("POLL_INTERVAL_SECONDS", "15")),
+            slot_size_usdt=slot_sz,
+            initial_max_slots=max_s,
             cash_reserve_usdt=float(os.getenv("CASH_RESERVE_USDT", "2.0")),
-            min_slot_price_diff_pct=float(os.getenv("MIN_SLOT_PRICE_DIFF_PCT", "1.0")),
-            trailing_stop_activation_pct=float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "1.2")) / 100.0,
-            trailing_stop_offset_pct=float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.5")) / 100.0,
+            min_slot_price_diff_pct=float(os.getenv("MIN_SLOT_PRICE_DIFF_PCT", "0.8")),
+            trailing_stop_activation_pct=float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "0.8")) / 100.0,
+            trailing_stop_offset_pct=float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.3")) / 100.0,
+            rsi_oversold=float(os.getenv("RSI_OVERSOLD", "36.0")),
+            rsi_overbought=float(os.getenv("RSI_OVERBOUGHT", "68.0")),
             stop_loss_pct=float(os.getenv("STOP_LOSS_PERCENT", "2.0")) / 100.0,
             take_profit_pct=float(os.getenv("TAKE_PROFIT_PERCENT", "3.0")) / 100.0,
             simulation_mode=os.getenv("SIMULATION_MODE", "false").lower() == "true",

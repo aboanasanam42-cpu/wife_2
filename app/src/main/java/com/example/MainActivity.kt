@@ -475,20 +475,23 @@ fun MexcTradingApp() {
                             TELEGRAM_BOT_TOKEN=$telegramToken
                             TELEGRAM_CHAT_ID=$telegramChatId
 
-                            # Trading Configuration
+                            # Trading Configuration (Fast Scalping)
                             TRADE_SYMBOL=$selectedSymbol
-                            TIMEFRAME=15m
-                            CHECK_INTERVAL_SECONDS=30
+                            # Fallback support: PAIR=$selectedSymbol
+                            TIMEFRAME=1m
+                            CHECK_INTERVAL_SECONDS=15
 
                             # Multi-Slot Fixed Allocation & Dynamic Compounding Scaling
                             SLOT_SIZE_USDT=4.0
+                            # Fallback support: TRADE_AMOUNT_USDT=4.0
                             INITIAL_MAX_SLOTS=2
+                            # Fallback support: MAX_OPEN_TRADES=2
                             CASH_RESERVE_USDT=2.0
-                            MIN_SLOT_PRICE_DIFF_PCT=1.0
+                            MIN_SLOT_PRICE_DIFF_PCT=0.8
 
                             # Trailing Take-Profit & Hard Stop-Loss per slot
-                            TRAILING_STOP_ACTIVATION_PCT=1.2
-                            TRAILING_STOP_OFFSET_PCT=0.5
+                            TRAILING_STOP_ACTIVATION_PCT=0.8
+                            TRAILING_STOP_OFFSET_PCT=0.3
                             STOP_LOSS_PERCENT=2.0
                             TAKE_PROFIT_PERCENT=3.0
 
@@ -496,8 +499,8 @@ fun MexcTradingApp() {
                             BOLLINGER_PERIOD=20
                             BOLLINGER_STD=2.0
                             RSI_PERIOD=14
-                            RSI_OVERSOLD=30.0
-                            RSI_OVERBOUGHT=70.0
+                            RSI_OVERSOLD=36.0
+                            RSI_OVERBOUGHT=68.0
 
                             # Execution Limits
                             MAX_SLIPPAGE_PCT=0.005

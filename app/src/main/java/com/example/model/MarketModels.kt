@@ -28,9 +28,9 @@ data class MultiSlotEngineState(
     val maxAllowedSlots: Int = 2,
     val activeSlotsCount: Int = 0,
     val cashReserveUsdt: Double = 2.0,
-    val minSlotPriceDiffPct: Double = 1.0,
-    val trailingActivationPct: Double = 1.2,
-    val trailingOffsetPct: Double = 0.5,
+    val minSlotPriceDiffPct: Double = 0.8,
+    val trailingActivationPct: Double = 0.8,
+    val trailingOffsetPct: Double = 0.3,
     val stopLossPct: Double = 2.0,
     val realizedPnlUsdt: Double = 0.0,
     val slots: List<TradeSlotItem> = emptyList()

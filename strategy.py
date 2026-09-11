@@ -1,11 +1,11 @@
 """
-Strategy module for Independent Multi-Slot Execution with Anti-Clustering Decoupling.
-Combines Bollinger Bands (%B), Fast RSI, and ATR for precision dip entries and peak exhaustion detection.
-Evaluates entry conditions while verifying price distance from existing active slots.
+Scalping Strategy Engine for MEXC Spot Independent Multi-Slot Execution.
+Computes vectorized Bollinger Bands (%B), Fast RSI (14), EMA, and ATR (14).
+Evaluates precision dip triggers and individual slot trailing/hard exits.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 import logging
@@ -30,15 +30,15 @@ class SpotStrategy:
     def __init__(
         self,
         rsi_period: int = 14,
-        rsi_oversold: float = 30.0,
-        rsi_overbought: float = 70.0,
+        rsi_oversold: float = 36.0,
+        rsi_overbought: float = 68.0,
         ema_period: int = 20,
         bollinger_period: int = 20,
         bollinger_std: float = 2.0,
         atr_period: int = 14,
         stop_loss_pct: float = 0.02,
         take_profit_pct: float = 0.03,
-        min_slot_price_diff_pct: float = 1.0,
+        min_slot_price_diff_pct: float = 0.8,
     ):
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
@@ -52,7 +52,9 @@ class SpotStrategy:
         self.min_slot_price_diff_pct = min_slot_price_diff_pct
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Computes Bollinger Bands, %B, RSI, EMA, and ATR on closed OHLCV candles."""
+        """
+        Computes vectorized Bollinger Bands, %B, Fast RSI, EMA, and ATR on closed OHLCV candles.
+        """
         df = df.copy()
 
         # 1. Bollinger Bands & %B
@@ -65,12 +67,12 @@ class SpotStrategy:
         band_diff = df["bb_upper"] - df["bb_lower"]
         df["bb_percent_b"] = np.where(band_diff > 0, (df["close"] - df["bb_lower"]) / band_diff, 0.5)
 
-        # 2. Fast RSI
+        # 2. Fast RSI (14)
         delta = df["close"].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        gain = (delta.where(delta > 0, 0.0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0.0)).rolling(window=self.rsi_period).mean()
         rs = gain / loss.replace(0, np.nan)
-        df["rsi"] = 100 - (100 / (1 + rs))
+        df["rsi"] = 100.0 - (100.0 / (1.0 + rs))
         df["rsi"] = df["rsi"].fillna(50.0)
 
         # 3. EMA
@@ -86,13 +88,19 @@ class SpotStrategy:
 
         return df
 
-    def evaluate_slot_exit(self, slot_id: str, slot: Dict[str, Any], current_price: float, rsi: float, pct_b: float) -> Optional[SignalResult]:
+    def evaluate_slot_exit(
+        self,
+        slot_id: str,
+        slot: Dict[str, Any],
+        current_price: float,
+        rsi: float,
+        pct_b: float,
+    ) -> Optional[SignalResult]:
         """
-        Evaluates an individual active slot for independent exit triggers:
-        1. Hard Stop-Loss (-2.0% from entry)
-        2. Dynamic Trailing Take-Profit Floor
-        3. Fixed Take-Profit target
-        4. Overbought Peak Exhaustion
+        Evaluates an individual active slot for immediate exit triggers:
+        1. Trailing stop floor breached or Hard Stop-Loss (-2.0%) breached
+        2. Base Take-Profit reached
+        3. Overbought exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT
         """
         if not slot.get("active"):
             return None
@@ -102,11 +110,12 @@ class SpotStrategy:
         sl_price = float(slot.get("stop_loss", entry_price * (1.0 - self.stop_loss_pct)))
         tp_price = float(slot.get("take_profit", entry_price * (1.0 + self.take_profit_pct)))
 
-        # 1. Hard Stop-Loss or Trailing Stop Hit
+        pnl_pct = ((current_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
+
+        # 1. Trailing Stop Floor OR Hard Stop-Loss Hit
         if current_price <= sl_price:
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
-            is_trailing = highest_price > (entry_price * 1.01)
-            label = "Trailing Stop Triggered" if is_trailing else "Hard Stop-Loss Triggered"
+            is_trailing = highest_price > (entry_price * 1.005)
+            label = "Trailing Stop Floor Hit" if is_trailing else "Hard Stop-Loss (-2.0%) Hit"
             reason = f"{label} on {slot_id} at ${current_price:,.2f} (Floor: ${sl_price:,.2f}, PnL: {pnl_pct:+.2f}%)"
             return SignalResult(
                 action="SELL",
@@ -118,10 +127,9 @@ class SpotStrategy:
                 target_slot_id=slot_id,
             )
 
-        # 2. Hard Take-Profit Hit
+        # 2. Hard Take-Profit Target Reached
         if current_price >= tp_price:
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
-            reason = f"Take-Profit Target Reached on {slot_id} at ${current_price:,.2f} (TP: ${tp_price:,.2f}, PnL: {pnl_pct:+.2f}%)"
+            reason = f"Take-Profit Target Hit on {slot_id} at ${current_price:,.2f} (Target: ${tp_price:,.2f}, PnL: {pnl_pct:+.2f}%)"
             return SignalResult(
                 action="SELL",
                 price=current_price,
@@ -132,10 +140,12 @@ class SpotStrategy:
                 target_slot_id=slot_id,
             )
 
-        # 3. Overbought Peak Exhaustion Exit (if slot has captured net profit >= 1.0%)
-        pnl_pct = ((current_price - entry_price) / entry_price) * 100.0
-        if pnl_pct >= 1.0 and pct_b > 0.95 and rsi >= self.rsi_overbought:
-            reason = f"Overbought Peak Exit on {slot_id} at ${current_price:,.2f} (%B: {pct_b:.2f}, RSI: {rsi:.1f}, PnL: {pnl_pct:+.2f}%)"
+        # 3. Overbought Peak Exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT
+        if pct_b >= 0.95 and rsi >= self.rsi_overbought and pnl_pct > 0.0:
+            reason = (
+                f"Overbought Exhaustion Exit on {slot_id} at ${current_price:,.2f} "
+                f"(%B: {pct_b:.2f} >= 0.95, RSI: {rsi:.1f} >= {self.rsi_overbought:.1f}, PnL: {pnl_pct:+.2f}%)"
+            )
             return SignalResult(
                 action="SELL",
                 price=current_price,
@@ -148,12 +158,14 @@ class SpotStrategy:
 
         return None
 
-    def evaluate_entry_decoupling(self, current_price: float, active_slots: List[Dict[str, Any]]) -> tuple[bool, str]:
+    def evaluate_entry_decoupling(
+        self,
+        current_price: float,
+        active_slots: List[Dict[str, Any]],
+    ) -> Tuple[bool, str]:
         """
         Anti-Clustering Check:
-        Prevents opening a new slot too close to existing active slots.
-        Requires current_price to be separated by at least min_slot_price_diff_pct (e.g. >= 1.0% drop)
-        from any other active slot's entry price.
+        Prevents opening a new slot at the same candle or price if another slot entered within MIN_SLOT_PRICE_DIFF_PCT.
         """
         if not active_slots:
             return True, "No active slots. Entry clear."
@@ -165,11 +177,11 @@ class SpotStrategy:
             diff_pct = abs(current_price - entry_p) / entry_p * 100.0
             if diff_pct < self.min_slot_price_diff_pct:
                 return False, (
-                    f"Anti-Clustering block: Current price ${current_price:,.2f} is only {diff_pct:.2f}% "
+                    f"Anti-Clustering block: Current price ${current_price:,.2f} is {diff_pct:.2f}% "
                     f"from {slot.get('slot_id')} entry (${entry_p:,.2f}). Requires >={self.min_slot_price_diff_pct:.1f}% spacing."
                 )
 
-        return True, "Anti-clustering decoupling verified. Entry price spaced adequately."
+        return True, "Anti-clustering decoupling verified. Entry price separated adequately."
 
     def evaluate_entry_signal(
         self,
@@ -178,8 +190,11 @@ class SpotStrategy:
         available_slot_id: Optional[str],
     ) -> SignalResult:
         """
-        Evaluates whether technical conditions (Bollinger Dip + Oversold RSI) warrant opening
-        a new isolated trade slot, adhering strictly to anti-clustering distance rules.
+        Dip Trigger:
+        Returns BUY when:
+        1. %B <= 0.15 AND RSI <= RSI_OVERSOLD (default 36.0)
+        OR
+        2. Bullish Reversal Divergence: previous %B <= 0.05 and current %B > previous %B with RSI <= RSI_OVERSOLD + 4.0
         """
         if available_slot_id is None:
             return SignalResult(
@@ -200,12 +215,16 @@ class SpotStrategy:
         atr = float(last["atr"])
         prev_pct_b = float(prev["bb_percent_b"])
 
-        # Dip Detection: %B < 0.10 (lower band touch) OR bouncing off extreme lows (<0.05)
-        is_dip = (pct_b < 0.10) or (prev_pct_b <= 0.05 and pct_b > prev_pct_b)
-        is_rsi_oversold = rsi <= (self.rsi_oversold + 5.0)  # <= 35.0 threshold for fast reactive entries
+        # Dip Trigger 1: Deep lower band penetration (%B <= 0.15) & RSI <= RSI_OVERSOLD
+        dip_trigger = (pct_b <= 0.15) and (rsi <= self.rsi_oversold)
 
-        if is_dip and is_rsi_oversold:
-            # Check Anti-Clustering decoupling against all active slots
+        # Dip Trigger 2: Bullish Reversal Divergence from oversold floor
+        divergence_trigger = (prev_pct_b <= 0.05 and pct_b > prev_pct_b) and (rsi <= self.rsi_oversold + 4.0)
+
+        if dip_trigger or divergence_trigger:
+            trigger_type = "Dip Trigger (%B<=0.15 & RSI<=oversold)" if dip_trigger else "Bullish Divergence Reversal"
+
+            # Verify Anti-Clustering spacing against all open slots
             can_enter, decouple_reason = self.evaluate_entry_decoupling(current_price, active_slots)
             if not can_enter:
                 return SignalResult(
@@ -217,13 +236,13 @@ class SpotStrategy:
                     reason=decouple_reason,
                 )
 
-            # Calculate isolated initial SL and TP for this new slot
+            # Calculate isolated initial SL and TP for this slot
             dynamic_sl = current_price - max(1.5 * atr, current_price * self.stop_loss_pct)
             dynamic_tp = current_price + max(2.5 * atr, current_price * self.take_profit_pct)
 
             reason = (
-                f"Multi-Slot Entry triggered for {available_slot_id}: %B={pct_b:.2f}, RSI={rsi:.1f}, ATR={atr:.2f}. "
-                f"Spacing confirmed against {len(active_slots)} active slots."
+                f"{trigger_type} for {available_slot_id}: %B={pct_b:.2f}, RSI={rsi:.1f}, ATR={atr:.2f}. "
+                f"Decoupled from {len(active_slots)} active slots."
             )
             return SignalResult(
                 action="BUY",
@@ -243,5 +262,5 @@ class SpotStrategy:
             rsi_value=rsi,
             percent_b=pct_b,
             atr_value=atr,
-            reason=f"Scanning market for dip entry. %B: {pct_b:.2f}, RSI: {rsi:.1f}, ATR: {atr:.2f}",
+            reason=f"Scanning for micro-dips (%B: {pct_b:.2f}, RSI: {rsi:.1f}, ATR: {atr:.2f})",
         )

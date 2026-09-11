@@ -247,8 +247,16 @@ class MexcSpotClient:
             }
 
         constraints = self.get_symbol_constraints(symbol)
-        precision = constraints["amount_precision"]
-        formatted_amount = float(f"{token_amount:.{precision}f}")
+        precision = constraints.get("amount_precision", 6)
+        
+        # Use CCXT's exchange.amount_to_precision when available for exact lot sizing
+        if hasattr(self.exchange, "amount_to_precision"):
+            try:
+                formatted_amount = float(self.exchange.amount_to_precision(symbol, token_amount))
+            except Exception:
+                formatted_amount = float(f"{token_amount:.{precision}f}")
+        else:
+            formatted_amount = float(f"{token_amount:.{precision}f}")
 
         logger.info("Dispatching MEXC Spot Market SELL for %s: %s tokens", symbol, formatted_amount)
         try:
