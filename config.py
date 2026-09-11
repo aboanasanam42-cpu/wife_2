@@ -32,15 +32,24 @@ def _float_env(*names: str, default: float, percent_names=()) -> float:
     return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class TradingConfig:
     mexc_api_key: str
     mexc_api_secret: str
-    trade_symbols: List[str] = field(default_factory=lambda: ["SOL/USDT", "DOGE/USDT"])
+    trade_symbols: List[str] = field(default_factory=list)
+    auto_select_symbols: bool = True
+    auto_select_count: int = 4
     timeframe: str = "1m"
     poll_interval_seconds: int = 10
-    slot_size_usdt: float = 4.0
-    initial_max_slots: int = 2
+    slot_size_usdt: float = 2.0
+    initial_max_slots: int = 4
     cash_reserve_usdt: float = 2.0
     min_slot_price_diff_pct: float = 0.006
     bollinger_period: int = 20
@@ -59,17 +68,17 @@ class TradingConfig:
 
     @property
     def trade_symbol(self) -> str:
-        return self.trade_symbols[0]
+        return self.trade_symbols[0] if self.trade_symbols else ""
 
     @classmethod
     def load_from_env(cls) -> "TradingConfig":
-        simulation = os.getenv("SIMULATION_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+        simulation = _bool_env("SIMULATION_MODE", False)
         key = os.getenv("MEXC_API_KEY", "").strip()
         secret = os.getenv("MEXC_API_SECRET", "").strip()
         if not simulation and (not key or not secret):
             raise ValueError("MEXC_API_KEY and MEXC_API_SECRET are required when SIMULATION_MODE is false.")
 
-        raw_pairs = os.getenv("TRADE_SYMBOLS") or os.getenv("TRADE_SYMBOL") or os.getenv("PAIR") or "SOL/USDT,DOGE/USDT"
+        raw_pairs = os.getenv("TRADE_SYMBOLS") or os.getenv("TRADE_SYMBOL") or os.getenv("PAIR") or ""
         symbols = []
         for raw in raw_pairs.split(","):
             symbol = raw.strip().upper()
@@ -77,11 +86,16 @@ class TradingConfig:
                 symbol += "/USDT"
             if symbol and symbol not in symbols:
                 symbols.append(symbol)
-        symbols = symbols or ["SOL/USDT", "DOGE/USDT"]
 
-        slot_raw = os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT") or "4"
+        auto_select = _bool_env("AUTO_SELECT_SYMBOLS", True)
+        select_count = max(1, int(os.getenv("AUTO_SELECT_COUNT", "4")))
+        # Explicit TRADE_SYMBOLS disables automatic discovery unless AUTO_SELECT_SYMBOLS=true.
+        if symbols and os.getenv("AUTO_SELECT_SYMBOLS") is None:
+            auto_select = False
+
+        slot_raw = os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT") or "2"
         slot_size = float(str(slot_raw).replace("USDT", "").strip())
-        max_slots = int(os.getenv("INITIAL_MAX_SLOTS") or os.getenv("MAX_OPEN_TRADES") or "2")
+        max_slots = int(os.getenv("INITIAL_MAX_SLOTS") or os.getenv("MAX_OPEN_TRADES") or str(select_count))
         reserve = float(os.getenv("CASH_RESERVE_USDT", "2"))
         poll = int(os.getenv("CHECK_INTERVAL_SECONDS") or os.getenv("POLL_INTERVAL_SECONDS") or "10")
 
@@ -89,6 +103,8 @@ class TradingConfig:
             mexc_api_key=key,
             mexc_api_secret=secret,
             trade_symbols=symbols,
+            auto_select_symbols=auto_select,
+            auto_select_count=select_count,
             timeframe=os.getenv("TIMEFRAME", "1m").strip(),
             poll_interval_seconds=max(1, poll),
             slot_size_usdt=slot_size,
