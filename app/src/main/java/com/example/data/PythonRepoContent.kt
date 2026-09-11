@@ -32,15 +32,15 @@ class SpotStrategy:
     def __init__(
         self,
         rsi_period: int = 14,
-        rsi_oversold: float = 36.0,
-        rsi_overbought: float = 68.0,
+        rsi_oversold: float = 38.0,
+        rsi_overbought: float = 65.0,
         ema_period: int = 20,
         bollinger_period: int = 20,
         bollinger_std: float = 2.0,
         atr_period: int = 14,
         stop_loss_pct: float = 0.02,
         take_profit_pct: float = 0.03,
-        min_slot_price_diff_pct: float = 0.8,
+        min_slot_price_diff_pct: float = 0.006,
     ):
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
@@ -520,9 +520,9 @@ class TelegramNotifier:
         ),
         PythonFileItem(
             name = "Procfile",
-            description = "Worker process declaration for Railway deployment.",
+            description = "Web & worker process declarations for Railway deployment.",
             badge = "Railway Config",
-            code = "worker: python main.py"
+            code = "web: python main.py\nworker: python main.py"
         ),
         PythonFileItem(
             name = "requirements.txt",

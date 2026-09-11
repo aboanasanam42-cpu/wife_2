@@ -20,6 +20,8 @@ import signal
 import logging
 import traceback
 import math
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import ccxt
@@ -31,6 +33,38 @@ from exchange_client import MexcSpotClient
 
 logger = setup_logger("mexc_trader.main")
 STATE_FILE = "bot_state.json"
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Responds to Railway HTTP health probes to confirm service vitality."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        payload = json.dumps({
+            "status": "healthy",
+            "service": "MAROAH MEXC Multi-Slot Bot",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        self.wfile.write(payload.encode("utf-8"))
+
+    def log_message(self, format, *args):
+        pass  # Suppress repetitive access log entries
+
+
+def start_health_check_server():
+    """Starts background HTTP server if PORT environment variable is configured (Railway default)."""
+    port_raw = os.getenv("PORT")
+    if not port_raw:
+        return
+    try:
+        port = int(port_raw)
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        logger.info("Railway HTTP health-check server listening on 0.0.0.0:%d", port)
+        server.serve_forever()
+    except Exception as exc:
+        logger.warning("Could not launch HTTP health-check server on port %s: %s", port_raw, exc)
 
 
 class MexcMultiSlotBot:
@@ -294,12 +328,19 @@ class MexcMultiSlotBot:
         except Exception as e:
             logger.warning("Startup Telegram notification failed: %s", e)
 
-        try:
-            self.client.initialize()
-        except Exception as e:
-            logger.error("Initialization failed: %s", e)
-            if not self.config.simulation_mode:
-                sys.exit(1)
+        # Resilient exchange client initialization with backoff
+        initialized = False
+        retry_delay = 5
+        while self.is_running and not initialized:
+            try:
+                self.client.initialize()
+                initialized = True
+            except Exception as e:
+                logger.warning("MEXC client initialization attempt failed (%s). Retrying in %ds...", e, retry_delay)
+                if self.config.simulation_mode:
+                    break
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
 
         while self.is_running:
             try:
@@ -590,6 +631,15 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error("Configuration Error: %s", e)
         sys.exit(1)
+
+    # Launch background HTTP health-check server if running on Railway/cloud container
+    if os.getenv("PORT"):
+        health_thread = threading.Thread(
+            target=start_health_check_server,
+            daemon=True,
+            name="RailwayHealthCheckServer",
+        )
+        health_thread.start()
 
     bot = MexcMultiSlotBot(cfg)
     bot.start()
