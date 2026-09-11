@@ -626,13 +626,7 @@ class MexcMultiSlotBot:
 
 
 if __name__ == "__main__":
-    try:
-        cfg = TradingConfig.load_from_env()
-    except Exception as e:
-        logger.error("Configuration Error: %s", e)
-        sys.exit(1)
-
-    # Launch background HTTP health-check server if running on Railway/cloud container
+    # Launch background HTTP health-check server immediately if running on Railway/cloud container
     if os.getenv("PORT"):
         health_thread = threading.Thread(
             target=start_health_check_server,
@@ -640,6 +634,24 @@ if __name__ == "__main__":
             name="RailwayHealthCheckServer",
         )
         health_thread.start()
+
+    try:
+        cfg = TradingConfig.load_from_env()
+    except Exception as e:
+        logger.error("Configuration Error: %s", e)
+        # If running under a container orchestrator with PORT, keep health server alive so deployment doesn't flap
+        if os.getenv("PORT"):
+            logger.warning("Waiting for valid environment configuration while serving health-checks...")
+            while True:
+                time.sleep(30)
+                try:
+                    cfg = TradingConfig.load_from_env()
+                    logger.info("Configuration reloaded successfully!")
+                    break
+                except Exception:
+                    pass
+        else:
+            sys.exit(1)
 
     bot = MexcMultiSlotBot(cfg)
     bot.start()

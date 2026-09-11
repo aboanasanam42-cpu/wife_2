@@ -171,14 +171,14 @@ fun MexcTradingApp() {
     var strategyState by remember {
         mutableStateOf(
             StrategyState(
-                rsi = 28.4,
-                rsiOversold = 30.0,
-                rsiOverbought = 70.0,
-                ema20 = 63980.0,
+                rsi = 34.4,
+                rsiOversold = 38.0,
+                rsiOverbought = 65.0,
+                ema20 = 144.80,
                 action = "BUY",
-                reason = "RSI oversold (28.4 <= 30.0) & Price ($64,250.00) above 20 EMA ($63,980.00)",
-                suggestedSl = 62965.0,
-                suggestedTp = 66820.0
+                reason = "%B <= 0.15 & RSI oversold (34.4 <= 38.0) dip signal triggered",
+                suggestedSl = 142.29,
+                suggestedTp = 149.55
             )
         )
     }
@@ -190,9 +190,9 @@ fun MexcTradingApp() {
     var apiSecret by remember { mutableStateOf("mx0secSampleSecretRailwaySecure") }
     var telegramToken by remember { mutableStateOf("7123456789:AAEjSampleTelegramBotToken") }
     var telegramChatId by remember { mutableStateOf("987654321") }
-    var tradeAmountUsdt by remember { mutableStateOf("15.0") }
-    var stopLossPct by remember { mutableDoubleStateOf(1.5) }
-    var takeProfitPct by remember { mutableDoubleStateOf(2.5) }
+    var tradeAmountUsdt by remember { mutableStateOf("4.0") }
+    var stopLossPct by remember { mutableDoubleStateOf(2.0) }
+    var takeProfitPct by remember { mutableDoubleStateOf(3.0) }
     var simulationMode by remember { mutableStateOf(false) }
 
     // Log Stream State

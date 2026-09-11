@@ -1,5 +1,5 @@
 *.iml
-.gradle
+.gradle/
 .kotlin
 /local.properties
 /.idea/caches
@@ -9,6 +9,8 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
+build/
+app/build/
 /build
 /captures
 .externalNativeBuild
