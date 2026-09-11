@@ -10,25 +10,39 @@ data class TickerInfo(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class InfinityGridState(
+    val gridStepPct: Double = 1.0,
+    val lowerBoundPrice: Double = 50000.0,
+    val lastRebalancePrice: Double = 64250.0,
+    val targetAssetValueUsdt: Double = 10.0,
+    val currentHoldingValueUsdt: Double = 10.0,
+    val baseAssetBalance: Double = 0.0001556,
+    val gridLevel: Int = 0,
+    val realizedPnlUsdt: Double = 0.0,
+    val action: String = "HOLD", // BUY, SELL, HOLD
+    val reason: String = "Maintaining constant target asset value in geometric grid"
+)
+
+// Maintained for backwards compatibility
 data class StrategyState(
-    val rsi: Double = 28.4,
+    val rsi: Double = 50.0,
     val rsiOversold: Double = 30.0,
     val rsiOverbought: Double = 70.0,
-    val ema20: Double = 63980.0,
-    val action: String = "BUY", // BUY, SELL, HOLD
-    val reason: String = "RSI oversold (28.4 <= 30.0) & Price ($64,250.00) above 20 EMA ($63,980.00)",
-    val suggestedSl: Double = 62965.0,
-    val suggestedTp: Double = 66820.0
+    val ema20: Double = 64250.0,
+    val action: String = "HOLD",
+    val reason: String = "Spot Infinity Grid active",
+    val suggestedSl: Double = 50000.0,
+    val suggestedTp: Double = 64892.5
 )
 
 data class PositionState(
-    val active: Boolean = false,
+    val active: Boolean = true,
     val symbol: String = "BTC/USDT",
-    val entryPrice: Double = 0.0,
-    val amount: Double = 0.0,
-    val costUsdt: Double = 0.0,
-    val stopLoss: Double = 0.0,
-    val takeProfit: Double = 0.0,
+    val entryPrice: Double = 64250.0,
+    val amount: Double = 0.0001556,
+    val costUsdt: Double = 10.0,
+    val stopLoss: Double = 50000.0,
+    val takeProfit: Double = 64892.5,
     val entryTime: String = ""
 )
 
