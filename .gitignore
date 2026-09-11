@@ -16,3 +16,11 @@
 local.properties
 .env
 debug.keystore
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+bot_state.json
+.build-outputs/
+*.apk
