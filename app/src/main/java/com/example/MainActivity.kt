@@ -467,7 +467,7 @@ fun MexcTradingApp() {
                     onSimulationModeChange = { simulationMode = it },
                     onCopyEnv = {
                         val envText = """
-                            # MEXC API Credentials
+                            # MEXC API Credentials (Spot permissions only)
                             MEXC_API_KEY=$apiKey
                             MEXC_API_SECRET=$apiSecret
 
@@ -477,12 +477,27 @@ fun MexcTradingApp() {
 
                             # Trading Configuration
                             TRADE_SYMBOL=$selectedSymbol
-                            CHECK_INTERVAL_SECONDS=20
+                            TIMEFRAME=15m
+                            CHECK_INTERVAL_SECONDS=30
 
-                            # Spot Infinity Grid (Geometric Constant Portfolio Value)
-                            GRID_STEP_PERCENT=1.0
-                            LOWER_BOUND_PRICE=50000.0
-                            ALLOCATION_USDT=$tradeAmountUsdt
+                            # Multi-Slot Fixed Allocation & Dynamic Compounding Scaling
+                            SLOT_SIZE_USDT=4.0
+                            INITIAL_MAX_SLOTS=2
+                            CASH_RESERVE_USDT=2.0
+                            MIN_SLOT_PRICE_DIFF_PCT=1.0
+
+                            # Trailing Take-Profit & Hard Stop-Loss per slot
+                            TRAILING_STOP_ACTIVATION_PCT=1.2
+                            TRAILING_STOP_OFFSET_PCT=0.5
+                            STOP_LOSS_PERCENT=2.0
+                            TAKE_PROFIT_PERCENT=3.0
+
+                            # Technical Indicators (Bollinger Bands %B + Fast RSI + ATR)
+                            BOLLINGER_PERIOD=20
+                            BOLLINGER_STD=2.0
+                            RSI_PERIOD=14
+                            RSI_OVERSOLD=30.0
+                            RSI_OVERBOUGHT=70.0
 
                             # Execution Limits
                             MAX_SLIPPAGE_PCT=0.005
@@ -491,7 +506,7 @@ fun MexcTradingApp() {
                         """.trimIndent()
                         clipboardManager.setText(AnnotatedString(envText))
                         coroutineScope.launch {
-                            snackbarHostState.showSnackbar(".env configuration copied to clipboard!")
+                            snackbarHostState.showSnackbar("Multi-Slot .env configuration copied to clipboard!")
                         }
                     },
                     onTestTelegram = {
@@ -1246,7 +1261,7 @@ fun ConfigTab(
                 OutlinedTextField(
                     value = tradeAmountUsdt,
                     onValueChange = onTradeAmountChange,
-                    label = { Text("TRADE_AMOUNT_USDT (Min 10 USDT)") },
+                    label = { Text("SLOT_SIZE_USDT (Default: 4.0 USDT)") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(

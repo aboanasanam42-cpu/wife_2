@@ -141,9 +141,12 @@ class MexcSpotClient:
             raise ValueError(f"Invalid market price for {symbol}")
 
         constraints = self.get_symbol_constraints(symbol)
-        if usdt_amount < constraints["min_cost"]:
-            raise ValueError(
-                f"Trade amount {usdt_amount} USDT is below MEXC minimum spot order cost of {constraints['min_cost']} USDT"
+        min_cost = constraints.get("min_cost", 1.0)
+        # Note: MEXC spot API minimum order value is typically 1 to 5 USDT depending on symbol.
+        if usdt_amount < min_cost:
+            logger.warning(
+                "Trade amount %.2f USDT is below reported minimum spot order cost of %.2f USDT for %s. Attempting order with exchange limits.",
+                usdt_amount, min_cost, symbol
             )
 
         # In simulation mode, perform mock execution

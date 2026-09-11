@@ -10,6 +10,33 @@ data class TickerInfo(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class TradeSlotItem(
+    val slotId: String = "slot_1",
+    val active: Boolean = false,
+    val entryPrice: Double = 0.0,
+    val highestPrice: Double = 0.0,
+    val amount: Double = 0.0,
+    val costUsdt: Double = 4.0,
+    val stopLoss: Double = 0.0,
+    val takeProfit: Double = 0.0,
+    val pnlPct: Double = 0.0,
+    val pnlUsdt: Double = 0.0
+)
+
+data class MultiSlotEngineState(
+    val slotSizeUsdt: Double = 4.0,
+    val maxAllowedSlots: Int = 2,
+    val activeSlotsCount: Int = 0,
+    val cashReserveUsdt: Double = 2.0,
+    val minSlotPriceDiffPct: Double = 1.0,
+    val trailingActivationPct: Double = 1.2,
+    val trailingOffsetPct: Double = 0.5,
+    val stopLossPct: Double = 2.0,
+    val realizedPnlUsdt: Double = 0.0,
+    val slots: List<TradeSlotItem> = emptyList()
+)
+
+// Legacy models for compatibility
 data class InfinityGridState(
     val gridStepPct: Double = 1.0,
     val lowerBoundPrice: Double = 50000.0,
@@ -19,30 +46,29 @@ data class InfinityGridState(
     val baseAssetBalance: Double = 0.0001556,
     val gridLevel: Int = 0,
     val realizedPnlUsdt: Double = 0.0,
-    val action: String = "HOLD", // BUY, SELL, HOLD
-    val reason: String = "Maintaining constant target asset value in geometric grid"
+    val action: String = "HOLD",
+    val reason: String = "Multi-Slot Scalper Engine active"
 )
 
-// Maintained for backwards compatibility
 data class StrategyState(
     val rsi: Double = 50.0,
     val rsiOversold: Double = 30.0,
     val rsiOverbought: Double = 70.0,
     val ema20: Double = 64250.0,
     val action: String = "HOLD",
-    val reason: String = "Spot Infinity Grid active",
-    val suggestedSl: Double = 50000.0,
-    val suggestedTp: Double = 64892.5
+    val reason: String = "Multi-slot monitoring",
+    val suggestedSl: Double = 62965.0,
+    val suggestedTp: Double = 66177.5
 )
 
 data class PositionState(
-    val active: Boolean = true,
+    val active: Boolean = false,
     val symbol: String = "BTC/USDT",
     val entryPrice: Double = 64250.0,
     val amount: Double = 0.0001556,
-    val costUsdt: Double = 10.0,
-    val stopLoss: Double = 50000.0,
-    val takeProfit: Double = 64892.5,
+    val costUsdt: Double = 4.0,
+    val stopLoss: Double = 62965.0,
+    val takeProfit: Double = 66177.5,
     val entryTime: String = ""
 )
 
