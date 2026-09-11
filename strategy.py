@@ -31,15 +31,15 @@ class SpotStrategy:
     def __init__(
         self,
         rsi_period: int = 14,
-        rsi_oversold: float = 36.0,
-        rsi_overbought: float = 68.0,
+        rsi_oversold: float = 38.0,
+        rsi_overbought: float = 65.0,
         ema_period: int = 20,
         bollinger_period: int = 20,
         bollinger_std: float = 2.0,
         atr_period: int = 14,
         stop_loss_pct: float = 0.02,
         take_profit_pct: float = 0.03,
-        min_slot_price_diff_pct: float = 0.8,
+        min_slot_price_diff_pct: float = 0.006,
     ):
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
@@ -192,16 +192,19 @@ class SpotStrategy:
         if not same_symbol_slots:
             return True, f"No active slots holding {symbol or 'this asset'}. Entry clear."
 
+        # Normalize threshold to percentage (e.g., 0.006 or 0.6 both represent 0.6%)
+        threshold_pct = self.min_slot_price_diff_pct * 100.0 if self.min_slot_price_diff_pct < 0.05 else self.min_slot_price_diff_pct
+
         for slot in same_symbol_slots:
             entry_p = float(slot.get("entry_price", 0.0))
             if entry_p <= 0:
                 continue
             diff_pct = abs(current_price - entry_p) / entry_p * 100.0
-            if diff_pct < self.min_slot_price_diff_pct:
+            if diff_pct < threshold_pct:
                 return False, (
                     f"Anti-Clustering block: Current price ${current_price:,.4f} is {diff_pct:.2f}% "
                     f"from {slot.get('slot_id')} entry (${entry_p:,.4f}) for {symbol}. "
-                    f"Requires >={self.min_slot_price_diff_pct:.1f}% spacing."
+                    f"Requires >={threshold_pct:.2f}% spacing."
                 )
 
         return True, f"Anti-clustering decoupling verified for {symbol}. Entry price separated adequately."

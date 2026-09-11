@@ -284,7 +284,7 @@ class MexcMultiSlotBot:
                 "active_slots": len(active_slots),
                 "max_slots": self.max_allowed_slots,
                 "cash_reserve_usdt": self.config.cash_reserve_usdt,
-                "min_slot_price_diff_pct": self.config.min_slot_price_diff_pct,
+                "min_slot_price_diff_pct": (self.config.min_slot_price_diff_pct * 100.0 if self.config.min_slot_price_diff_pct < 0.05 else self.config.min_slot_price_diff_pct),
                 "trailing_activation": self.config.trailing_stop_activation_pct * 100.0,
                 "trailing_offset": self.config.trailing_stop_offset_pct * 100.0,
                 "stop_loss": self.config.stop_loss_pct * 100.0,

@@ -203,7 +203,7 @@ fun MexcTradingApp() {
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.exchange", "Loaded 2,418 Spot markets successfully."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.notifier", "Telegram Notifier active. Dispatched startup alert to Chat 987654321."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "Multi-Pair Scanner monitoring: SOL/USDT, DOGE/USDT (Slot Size: $4.00 USDT, Reserve: $2.00 USDT)"),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[SOL/USDT] Close: $145.20 | %B: 0.12 | RSI: 32.1 | ATR: 1.4500 | Signal: BUY (%B <= 0.15 & RSI <= 36.0)"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[SOL/USDT] Close: $145.20 | %B: 0.12 | RSI: 32.1 | ATR: 1.4500 | Signal: BUY (%B <= 0.15 & RSI <= 38.0)"),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[DOGE/USDT] Close: $0.1245 | %B: 0.44 | RSI: 48.6 | ATR: 0.0032 | Signal: HOLD")
         )
     }
@@ -480,7 +480,7 @@ fun MexcTradingApp() {
                             TRADE_SYMBOL=SOL/USDT,DOGE/USDT
                             # Fallback support: PAIR=SOL/USDT,DOGE/USDT
                             TIMEFRAME=1m
-                            CHECK_INTERVAL_SECONDS=15
+                            CHECK_INTERVAL_SECONDS=10
 
                             # Multi-Slot Fixed Allocation & Dynamic Compounding Scaling
                             SLOT_SIZE_USDT=4.0
@@ -488,11 +488,11 @@ fun MexcTradingApp() {
                             INITIAL_MAX_SLOTS=2
                             # Fallback support: MAX_OPEN_TRADES=2
                             CASH_RESERVE_USDT=2.0
-                            MIN_SLOT_PRICE_DIFF_PCT=0.8
+                            MIN_SLOT_PRICE_DIFF_PCT=0.006
 
                             # Trailing Take-Profit & Hard Stop-Loss per slot
-                            TRAILING_STOP_ACTIVATION_PCT=0.8
-                            TRAILING_STOP_OFFSET_PCT=0.3
+                            TRAILING_STOP_ACTIVATION_PCT=0.008
+                            TRAILING_STOP_OFFSET_PCT=0.003
                             STOP_LOSS_PERCENT=2.0
                             TAKE_PROFIT_PERCENT=3.0
 
@@ -500,8 +500,8 @@ fun MexcTradingApp() {
                             BOLLINGER_PERIOD=20
                             BOLLINGER_STD=2.0
                             RSI_PERIOD=14
-                            RSI_OVERSOLD=36.0
-                            RSI_OVERBOUGHT=68.0
+                            RSI_OVERSOLD=38.0
+                            RSI_OVERBOUGHT=65.0
 
                             # Execution Limits
                             MAX_SLIPPAGE_PCT=0.005

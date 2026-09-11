@@ -31,7 +31,7 @@ class TradingConfig:
     mexc_api_secret: str
     trade_symbols: List[str] = field(default_factory=lambda: ["SOL/USDT", "DOGE/USDT"])
     timeframe: str = "1m"
-    poll_interval_seconds: int = 15
+    poll_interval_seconds: int = 10
     log_level: str = "INFO"
     simulation_mode: bool = False
     max_slippage_pct: float = 0.005
@@ -40,22 +40,22 @@ class TradingConfig:
     slot_size_usdt: float = 4.0
     initial_max_slots: int = 2
     cash_reserve_usdt: float = 2.0
-    min_slot_price_diff_pct: float = 0.8  # Inter-slot price distance for the same asset (default: 0.8%)
+    min_slot_price_diff_pct: float = 0.006  # Inter-slot price distance for the same asset: 0.6% (default: 0.006)
 
     # Strategy Parameters (Bollinger Bands %B + Fast RSI + ATR)
     bollinger_period: int = 20
     bollinger_std: float = 2.0
     rsi_period: int = 14
-    rsi_oversold: float = 36.0           # Widened to capture frequent local micro-dips
-    rsi_overbought: float = 68.0          # Overbought exhaustion threshold
+    rsi_oversold: float = 38.0           # Widened to capture frequent local micro-dips (default: 38.0)
+    rsi_overbought: float = 65.0          # Overbought exhaustion threshold (default: 65.0)
     ema_period: int = 20
     atr_period: int = 14
 
     # Per-Slot Independent Exit & Dynamic Trailing Engine
     stop_loss_pct: float = 0.02           # Hard Stop-Loss: -2.0%
     take_profit_pct: float = 0.03         # Base Take-Profit target: +3.0%
-    trailing_stop_activation_pct: float = 0.008  # +0.8% triggers trailing (+0.8%)
-    trailing_stop_offset_pct: float = 0.003      # 0.3% trailing distance
+    trailing_stop_activation_pct: float = 0.008  # +0.8% triggers trailing (default: 0.008)
+    trailing_stop_offset_pct: float = 0.003      # 0.3% trailing distance (default: 0.003)
 
     # Telegram Notification Alerts
     telegram_bot_token: Optional[str] = None
@@ -103,28 +103,29 @@ class TradingConfig:
         # 4. Cash Shield: CASH_RESERVE_USDT (default: 2.0)
         cash_reserve_usdt = float(os.getenv("CASH_RESERVE_USDT", "2.0"))
 
-        # 5. Inter-Slot Separation: MIN_SLOT_PRICE_DIFF_PCT (default: 0.8)
-        min_slot_price_diff_pct = float(os.getenv("MIN_SLOT_PRICE_DIFF_PCT", "0.8"))
+        # 5. Inter-Slot Separation: MIN_SLOT_PRICE_DIFF_PCT (default: 0.006 / 0.6%)
+        min_diff_raw = float(os.getenv("MIN_SLOT_PRICE_DIFF_PCT", "0.006"))
+        min_slot_price_diff_pct = min_diff_raw / 100.0 if min_diff_raw >= 0.05 else min_diff_raw
 
         # 6. Dynamic Execution:
-        # TIMEFRAME: default "1m" (or "3m") for fast-paced scalping
+        # TIMEFRAME: default "1m" for ultra-fast scalping
         timeframe = os.getenv("TIMEFRAME", "1m").strip()
 
-        # CHECK_INTERVAL_SECONDS: int, default 15
-        check_sec_raw = os.getenv("CHECK_INTERVAL_SECONDS") or os.getenv("POLL_INTERVAL_SECONDS", "15")
+        # CHECK_INTERVAL_SECONDS: int, default 10
+        check_sec_raw = os.getenv("CHECK_INTERVAL_SECONDS") or os.getenv("POLL_INTERVAL_SECONDS", "10")
         poll_interval_seconds = int(check_sec_raw)
 
-        # TRAILING_STOP_ACTIVATION_PCT: float, default 0.8 (+0.8% profit triggers trailing)
-        trailing_act_raw = float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "0.8"))
+        # TRAILING_STOP_ACTIVATION_PCT: float, default 0.008 (+0.8% profit triggers trailing)
+        trailing_act_raw = float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "0.008"))
         trailing_stop_activation_pct = trailing_act_raw / 100.0 if trailing_act_raw >= 0.05 else trailing_act_raw
 
-        # TRAILING_STOP_OFFSET_PCT: float, default 0.3 (locks profit on 0.3% retracement)
-        trailing_offset_raw = float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.3"))
+        # TRAILING_STOP_OFFSET_PCT: float, default 0.003 (locks profit on 0.3% retracement)
+        trailing_offset_raw = float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.003"))
         trailing_stop_offset_pct = trailing_offset_raw / 100.0 if trailing_offset_raw >= 0.05 else trailing_offset_raw
 
-        # RSI thresholds: RSI_OVERSOLD (default 36.0), RSI_OVERBOUGHT (default 68.0)
-        rsi_oversold = float(os.getenv("RSI_OVERSOLD", "36.0"))
-        rsi_overbought = float(os.getenv("RSI_OVERBOUGHT", "68.0"))
+        # RSI thresholds: RSI_OVERSOLD (default 38.0), RSI_OVERBOUGHT (default 65.0)
+        rsi_oversold = float(os.getenv("RSI_OVERSOLD", "38.0"))
+        rsi_overbought = float(os.getenv("RSI_OVERBOUGHT", "65.0"))
 
         # Stop-Loss and Take-Profit
         sl_raw = float(os.getenv("STOP_LOSS_PERCENT", "2.0"))
