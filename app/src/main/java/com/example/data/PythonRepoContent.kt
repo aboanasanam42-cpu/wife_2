@@ -520,20 +520,22 @@ class TelegramNotifier:
         ),
         PythonFileItem(
             name = "Procfile",
-            description = "Web & worker process declarations for Railway deployment.",
+            description = "Worker process declaration for Railway deployment.",
             badge = "Railway Config",
-            code = "web: python main.py\nworker: python main.py"
+            code = "worker: python main.py"
         ),
         PythonFileItem(
             name = "requirements.txt",
             description = "Pinned dependencies for Python 3.11+ deployment.",
             badge = "Dependencies",
             code = """
-ccxt>=4.2.0
-pandas>=2.1.0
+ccxt>=4.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+requests>=2.28.0
 python-dotenv>=1.0.0
+pandas_ta>=0.3.14b0
 pydantic>=2.5.0
-requests>=2.31.0
             """.trimIndent()
         ),
         PythonFileItem(
