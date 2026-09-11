@@ -1,36 +1,132 @@
-# MEXC Spot 24/7 Multi-Slot Scalper
+# MEXC 24/7 Spot Algorithmic Trading Bot (Railway Ready)
 
-Railway worker for MEXC Spot using CCXT. The repository is intentionally Python-only.
+A production-ready, fault-tolerant, modular Python application engineered for continuous automated Spot Trading on MEXC Global. Optimized for zero-downtime deployment on [Railway](https://railway.app) via automated GitHub CI/CD pipelines.
 
-## Defaults
-- **Automatic pair selection:** enabled by default; selects the top 4 active MEXC Spot `*/USDT` pairs by current 24h quote volume.
-- Stablecoin-vs-stablecoin pairs are excluded.
-- Timeframe: `1m`
-- Scan interval: `10s`
-- Slot size: `2.00 USDT`
-- Initial slots: `4`
-- Cash reserve: `2.00 USDT`
-- Entry: `RSI <= 38` and Bollinger `%B <= 0.15`
-- Trailing activation: `+0.8%`
-- Trailing distance: `0.3%`
-- Hard stop: `-2.0%`
-- Additional slots unlock automatically at each additional `2 USDT` of equity above the protected reserve.
+---
 
-## Automatic pair selection
-When `AUTO_SELECT_SYMBOLS=true`, the bot loads active MEXC Spot markets and ranks eligible USDT pairs by 24h quote volume. The highest-volume pairs are selected for scanning. The count is controlled by `AUTO_SELECT_COUNT` and defaults to `4`.
+## 🏛️ Architecture & System Design
 
-If an already-open position belongs to a pair that is no longer in the newly selected top list, that position is still monitored until it closes; automatic selection therefore does not abandon existing positions.
+```
+                     ┌───────────────────────────┐
+                     │   Railway Worker Daemon   │
+                     │       (Procfile)          │
+                     └─────────────┬─────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              ▼                    ▼                    ▼
+     ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+     │  MEXC Spot API  │  │ Strategy Engine │  │    Telegram     │
+     │     (CCXT)      │  │  (RSI + 20 EMA) │  │  Async Notifier │
+     └────────┬────────┘  └────────┬────────┘  └────────┬────────┘
+              │                    │                    │
+              └────────────────────┼────────────────────┘
+                                   ▼
+                       ┌───────────────────────┐
+                       │ State Persistence     │
+                       │   (bot_state.json)    │
+                       └───────────────────────┘
+```
 
-To force specific pairs instead, set `AUTO_SELECT_SYMBOLS=false` and provide `TRADE_SYMBOLS`, for example `BTC/USDT,ETH/USDT,SOL/USDT,DOGE/USDT`.
+- **Strict Spot Isolation:** Connects via `ccxt` with `defaultType: "spot"` and `enableRateLimit: True`. Contract and Futures endpoints are disabled.
+- **Closed Candle Integrity:** Drops the incomplete in-progress candle so indicators (Wilder's RSI + 20-period EMA) calculate exclusively on finalized market data.
+- **Risk Management:** Programmatic Stop-Loss (e.g., -2.0%) and Take-Profit (e.g., +4.0%) evaluated dynamically per cycle.
+- **State Recovery:** Persists active position entries, order IDs, and risk thresholds to `bot_state.json`, ensuring recovery even if Railway restarts or updates the container.
+- **Graceful Termination:** Listens for `SIGINT` and `SIGTERM` signals to cleanly save state and alert Telegram before shutting down.
 
-## Railway variables
-Required for live mode: `MEXC_API_KEY`, `MEXC_API_SECRET`.
+---
 
-Optional: `AUTO_SELECT_SYMBOLS`, `AUTO_SELECT_COUNT`, `TRADE_SYMBOLS`, `SLOT_SIZE_USDT`, `INITIAL_MAX_SLOTS`, `CASH_RESERVE_USDT`, `TIMEFRAME`, `CHECK_INTERVAL_SECONDS`, `RSI_OVERSOLD`, `TRAILING_STOP_ACTIVATION_PCT`, `TRAILING_STOP_OFFSET_PCT`, `STOP_LOSS_PCT`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SIMULATION_MODE`.
+## 📂 Repository File Structure
 
-Keep MEXC API permissions limited to Spot read/trade; do not enable withdrawals.
+```
+├── config.py             # Strongly-typed configuration parser & validator
+├── exchange_client.py    # Authenticated MEXC Spot API client with order execution & error handling
+├── strategy.py           # Technical analysis, indicators calculation, and signal engine
+├── notifier.py           # Threaded Telegram alerts dispatcher
+├── main.py               # Main 24/7 worker loop & process lifecycle manager
+├── requirements.txt      # Locked production dependencies
+├── Procfile              # Railway worker process specification
+├── .env.example          # Environment variables template
+└── README.md             # Architecture & deployment documentation
+```
 
-## Exact slot protection
-The bot does not silently raise the `$2.00` slot to satisfy an exchange minimum. If MEXC reports a minimum order value above `$2.00`, that entry is skipped and logged. This avoids accidental oversizing.
+---
 
-`bot_state.json` is intentionally ignored by Git. Railway local storage is ephemeral unless a persistent volume is configured, so configure a persistent volume if local restart/deploy state must survive container replacement.
+## 🚀 Fast Deployment Guide to Railway
+
+### Step 1: Create a GitHub Repository
+1. Initialize a git repository and commit all files:
+   ```bash
+   git init
+   git add .
+   git commit -m "feat: initial mexc spot trading bot"
+   git branch -M main
+   git remote add origin https://github.com/<your-username>/mexc-spot-bot.git
+   git push -u origin main
+   ```
+
+### Step 2: Set Up MEXC API Credentials
+1. Log into your [MEXC Account](https://www.mexc.com).
+2. Navigate to **User Profile** → **API Management**.
+3. Click **Create API**:
+   - Enable **Spot Trade** and **Read** permissions.
+   - ⚠️ **CRITICAL:** Ensure **Withdrawal** is **DISABLED**.
+   - (Recommended) Bind your Railway static outbound IP if available, or set 90-day validity.
+4. Save your `API Key` and `API Secret`.
+
+### Step 3: (Optional) Create Telegram Bot for Real-time Alerts
+1. Open Telegram and search for [@BotFather](https://t.me/BotFather).
+2. Send `/newbot`, choose a name and username, and copy the `HTTP API Token`.
+3. Start a chat with your new bot and send any test message.
+4. Obtain your numerical Chat ID via [@userinfobot](https://t.me/userinfobot) or `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`.
+
+### Step 4: Deploy on Railway
+1. Log in to [Railway.app](https://railway.app).
+2. Click **New Project** → **Deploy from GitHub repo**.
+3. Select your `mexc-spot-bot` repository.
+4. Navigate to the **Variables** tab of the service and add:
+
+| Variable Name | Description | Example Value |
+|---|---|---|
+| `MEXC_API_KEY` | MEXC Spot API Key | `mx0vglYourKey...` |
+| `MEXC_API_SECRET` | MEXC Spot Secret | `yourSecretHere...` |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | `123456789:ABC...` |
+| `TELEGRAM_CHAT_ID` | Telegram Chat ID | `987654321` |
+| `TRADE_SYMBOL` | Spot Pair | `BTC/USDT` |
+| `TRADE_AMOUNT_USDT` | Allocation per trade | `15.0` |
+| `TIMEFRAME` | Candle interval | `15m` |
+| `POLL_INTERVAL_SECONDS`| Loop wait time | `30` |
+| `STOP_LOSS_PCT` | Stop-Loss percentage | `0.02` (2%) |
+| `TAKE_PROFIT_PCT` | Take-Profit percentage | `0.04` (4%) |
+| `SIMULATION_MODE` | Dry run flag | `False` (or `True` to test) |
+
+5. Railway will automatically detect the `Procfile` (`worker: python main.py`) and launch the 24/7 background worker.
+6. Open the **Deploy Logs** to inspect live startup and candle evaluation cycles.
+
+---
+
+## 🧪 Local Testing & Dry Run (Simulation)
+
+To test the bot locally on your machine before enabling real money:
+
+```bash
+# Clone and setup virtualenv
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Set SIMULATION_MODE=True in .env
+
+# Run worker
+python main.py
+```
+
+---
+
+## 🔒 Security Best Practices
+- **Never commit `.env` or API credentials** to Git. Keep `.env` inside `.gitignore`.
+- Always set `SIMULATION_MODE=True` first when modifying trading strategies or indicators.
+- Regularly review MEXC API logs and Telegram execution alerts.
