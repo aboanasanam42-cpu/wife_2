@@ -534,8 +534,6 @@ pandas>=2.0.0
 numpy>=1.24.0
 requests>=2.28.0
 python-dotenv>=1.0.0
-pandas_ta>=0.3.14b0
-pydantic>=2.5.0
             """.trimIndent()
         ),
         PythonFileItem(
