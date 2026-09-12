@@ -1,10 +1,10 @@
 """
-MEXC 24/7 Automated Spot Trading Bot - Multi-Pair Multi-Slot Compounding Engine.
+MEXC 24/7 Automated Spot Trading Bot - Multi-Slot Compounding Engine (Dedicated BTC/USDT).
 Production-ready core execution engine for Railway (wife_2).
 
 Key Features:
-1. Multi-Pair Multi-Slot Scanner: Concurrently monitors configured trading pairs (e.g. SOL/USDT, DOGE/USDT)
-   and allocates independent $4.00 USDT slots to whichever asset triggers a valid dip signal first.
+1. Dedicated Pair Multi-Slot Scanner: Focuses 100% of resources and slots strictly on BTC/USDT
+   with dynamic RSI trough-hook and Bollinger Band %B entries.
 2. Slot Decoupling: Persistent state in bot_state.json with independent order execution and symbol tracking per slot.
 3. Auto-Compounding Scaling: Dynamically uncaps slot_3, slot_4, ... based on total portfolio equity.
 4. Execution Precision & Minimums: Formats quantity via exchange.amount_to_precision(symbol, amount).

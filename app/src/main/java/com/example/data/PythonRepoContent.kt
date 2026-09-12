@@ -376,12 +376,7 @@ class TradingConfig:
     mexc_api_secret: str
     trade_symbols: list[str] = field(
         default_factory=lambda: [
-            "SOL/USDT",
-            "DOGE/USDT",
-            "PEPE/USDT",
-            "SHIB/USDT",
-            "NEAR/USDT",
-            "SUI/USDT",
+            "BTC/USDT",
         ]
     )
     timeframe: str = "1m"
@@ -414,14 +409,14 @@ class TradingConfig:
 
     @property
     def trade_symbol(self) -> str:
-        return self.trade_symbols[0] if self.trade_symbols else "SOL/USDT"
+        return self.trade_symbols[0] if self.trade_symbols else "BTC/USDT"
 
     @classmethod
     def load_from_env(cls) -> "TradingConfig":
-        default_str = "SOL/USDT,DOGE/USDT,PEPE/USDT,SHIB/USDT,NEAR/USDT,SUI/USDT"
+        default_str = "BTC/USDT"
         raw_symbol = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR", default_str)
         pairs = [p.strip().upper() for p in raw_symbol.split(",") if p.strip()] or [
-            "SOL/USDT", "DOGE/USDT", "PEPE/USDT", "SHIB/USDT", "NEAR/USDT", "SUI/USDT"
+            "BTC/USDT"
         ]
         slot_sz = float(os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT", "4.0"))
         max_s = int(os.getenv("INITIAL_MAX_SLOTS") or os.getenv("MAX_OPEN_TRADES", "2"))

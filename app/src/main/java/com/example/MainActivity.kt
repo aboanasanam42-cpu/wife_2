@@ -150,19 +150,19 @@ fun MexcTradingApp() {
     val apiClient = remember { MexcApiClient() }
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    var selectedSymbol by remember { mutableStateOf("SOLUSDT") }
+    var selectedSymbol by remember { mutableStateOf("BTCUSDT") }
     var isRefreshing by remember { mutableStateOf(false) }
 
     // Live Ticker State
     var ticker by remember {
         mutableStateOf(
             TickerInfo(
-                symbol = "SOL/USDT",
-                lastPrice = 145.20,
-                high24h = 152.00,
-                low24h = 138.50,
-                volume24h = 184500.0,
-                changePercent24h = 3.42
+                symbol = "BTC/USDT",
+                lastPrice = 64250.00,
+                high24h = 65400.00,
+                low24h = 63800.00,
+                volume24h = 14250.0,
+                changePercent24h = 1.45
             )
         )
     }
@@ -174,16 +174,16 @@ fun MexcTradingApp() {
                 rsi = 34.4,
                 rsiOversold = 38.0,
                 rsiOverbought = 68.0,
-                ema20 = 144.80,
+                ema20 = 64180.00,
                 action = "BUY",
-                reason = "%B <= 0.15 & RSI oversold (34.4 <= 38.0) dip signal triggered",
-                suggestedSl = 142.29,
-                suggestedTp = 149.55
+                reason = "Dynamic RSI Trough-Hook & %B dip signal triggered on BTC/USDT",
+                suggestedSl = 62965.00,
+                suggestedTp = 66177.50
             )
         )
     }
 
-    var position by remember { mutableStateOf(PositionState()) }
+    var position by remember { mutableStateOf(PositionState(active = true, symbol = "BTC/USDT", entryPrice = 64100.0, amount = 0.000062, costUsdt = 4.0, stopLoss = 62818.0, takeProfit = 66023.0)) }
 
     // Bot Config State
     var apiKey by remember { mutableStateOf("mx0vglSampleKeyRailwaySecure") }
@@ -202,10 +202,10 @@ fun MexcTradingApp() {
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.exchange", "Connecting to MEXC Spot API with enableRateLimit=True..."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.exchange", "Loaded 2,418 Spot markets successfully."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.notifier", "Telegram Notifier active. Dispatched startup alert to Chat 987654321."),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "Multi-Pair Scanner monitoring 6 volatile pairs: SOL/USDT, DOGE/USDT, PEPE/USDT, SHIB/USDT, NEAR/USDT, SUI/USDT (Slot Size: $4.00 USDT, Reserve: $2.00 USDT)"),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[SOL/USDT] Close: $145.20 | %B: 0.12 | RSI: 32.1 | ATR: 1.4500 | Signal: BUY (%B <= 0.15 & RSI <= 38.0)"),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[PEPE/USDT] Close: $0.00000945 | %B: 0.14 | RSI: 36.5 | Lot Precision formatted (No e-notation)"),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[DOGE/USDT] Close: $0.1245 | %B: 0.44 | RSI: 48.6 | ATR: 0.0032 | Signal: HOLD")
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "Scanner Engine dedicated exclusively to BTC/USDT (Slot Size: $4.00 USDT, Reserve: $2.00 USDT)"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[BTC/USDT] Close: $64,250.00 | %B: 0.16 | RSI: 34.4 | Signal: BUY (Dynamic RSI Trough-Hook [38.2 -> 32.1 -> 34.4])"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "[slot_1] Executed BUY 0.000062 BTC at $64,250.00 ($4.00 USDT)"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[BTC/USDT] Close: $64,380.00 | %B: 0.38 | RSI: 46.2 | ATR: 120.50 | Trailing Stop Floor active")
         )
     }
 
@@ -477,9 +477,9 @@ fun MexcTradingApp() {
                             TELEGRAM_BOT_TOKEN=$telegramToken
                             TELEGRAM_CHAT_ID=$telegramChatId
 
-                            # Trading Configuration (Multi-Pair Concurrent Scanner)
-                            TRADE_SYMBOL=SOL/USDT,DOGE/USDT
-                            # Fallback support: PAIR=SOL/USDT,DOGE/USDT
+                            # Trading Configuration (Dedicated BTC/USDT Pair)
+                            TRADE_SYMBOL=BTC/USDT
+                            # Fallback support: PAIR=BTC/USDT
                             TIMEFRAME=1m
                             CHECK_INTERVAL_SECONDS=10
 
@@ -562,6 +562,7 @@ fun MonitorTab(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val pairs = listOf(
+                "BTCUSDT" to "BTC/USDT",
                 "SOLUSDT" to "SOL/USDT",
                 "DOGEUSDT" to "DOGE/USDT",
                 "PEPEUSDT" to "PEPE/USDT",

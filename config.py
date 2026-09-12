@@ -31,12 +31,7 @@ class TradingConfig:
     mexc_api_secret: str
     trade_symbols: List[str] = field(
         default_factory=lambda: [
-            "SOL/USDT",
-            "DOGE/USDT",
-            "PEPE/USDT",
-            "SHIB/USDT",
-            "NEAR/USDT",
-            "SUI/USDT",
+            "BTC/USDT",
         ]
     )
     timeframe: str = "1m"
@@ -74,7 +69,7 @@ class TradingConfig:
     @property
     def trade_symbol(self) -> str:
         """Backward compatibility accessor returning primary pair."""
-        return self.trade_symbols[0] if self.trade_symbols else "SOL/USDT"
+        return self.trade_symbols[0] if self.trade_symbols else "BTC/USDT"
 
     @classmethod
     def load_from_env(cls) -> "TradingConfig":
@@ -86,8 +81,9 @@ class TradingConfig:
         if not simulation_mode and (not api_key or not api_secret):
             raise ValueError("MEXC_API_KEY and MEXC_API_SECRET must be set in environment variables.")
 
-        # 1. Multi-Pair Parsing: Read TRADE_SYMBOL first, fallback to PAIR (default: 6 volatile pairs)
-        default_basket_str = "SOL/USDT,DOGE/USDT,PEPE/USDT,SHIB/USDT,NEAR/USDT,SUI/USDT"
+        # 1. Trading Symbol Parsing: Read TRADE_SYMBOL first, fallback to PAIR (default: "BTC/USDT")
+        # Multi-pair dynamic auto-selection is disabled; engine focuses 100% of resources and slots on BTC/USDT
+        default_basket_str = "BTC/USDT"
         raw_pairs = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR") or default_basket_str
         parsed_symbols: List[str] = []
         for item in raw_pairs.split(","):
@@ -100,14 +96,7 @@ class TradingConfig:
                 parsed_symbols.append(s)
 
         if not parsed_symbols:
-            parsed_symbols = [
-                "SOL/USDT",
-                "DOGE/USDT",
-                "PEPE/USDT",
-                "SHIB/USDT",
-                "NEAR/USDT",
-                "SUI/USDT",
-            ]
+            parsed_symbols = ["BTC/USDT"]
 
         # 2. Slot Sizing: Read SLOT_SIZE_USDT first, fallback to TRADE_AMOUNT_USDT (default: 4.0)
         raw_slot_size = os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT", "4.0")
