@@ -116,6 +116,8 @@ class MexcMultiSlotBot:
             atr_period=config.atr_period,
             stop_loss_pct=config.stop_loss_pct,
             take_profit_pct=config.take_profit_pct,
+            trailing_stop_activation_pct=config.trailing_stop_activation_pct,
+            trailing_stop_offset_pct=config.trailing_stop_offset_pct,
             min_slot_price_diff_pct=config.min_slot_price_diff_pct,
         )
 
@@ -408,6 +410,7 @@ class MexcMultiSlotBot:
                             rsi=rsi,
                             pct_b=pct_b,
                             symbol=symbol,
+                            df=df_indicators,
                         )
                         if exit_signal and exit_signal.action == "SELL":
                             self._execute_slot_exit(slot_id, exit_signal)

@@ -117,7 +117,7 @@ class TelegramNotifier:
             f"• <b>Cost:</b> <code>${cost_usdt:,.2f} USDT</code>\n"
             f"• <b>Slot Utilization:</b> <code>{active_count} / {max_slots} Active</code>\n"
             f"• <b>Trigger:</b> <i>{reason}</i>\n\n"
-            "<i>Trailing take-profit armed (+0.8% activation floor).</i>"
+            "<i>Trailing take-profit armed (+0.5% activation floor, 0.2% offset).</i>"
         )
         self.send_message(msg)
 

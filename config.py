@@ -54,9 +54,9 @@ class TradingConfig:
     # Strategy Parameters (Bollinger Bands %B + Fast RSI + ATR)
     bollinger_period: int = 20
     bollinger_std: float = 2.0
-    bollinger_b_entry: float = 0.15      # Entry threshold for Bollinger %B (default: 0.15)
+    bollinger_b_entry: float = 0.20      # Entry threshold for Bollinger %B lower band proximity (default: 0.20)
     rsi_period: int = 14
-    rsi_oversold: float = 38.0           # Widened to capture frequent local micro-dips (default: 38.0)
+    rsi_oversold: float = 38.0           # Baseline reference
     rsi_overbought: float = 68.0          # Overbought exhaustion threshold (default: 68.0)
     ema_period: int = 20
     atr_period: int = 14
@@ -64,8 +64,8 @@ class TradingConfig:
     # Per-Slot Independent Exit & Dynamic Trailing Engine
     stop_loss_pct: float = 0.02           # Hard Stop-Loss: -2.0%
     take_profit_pct: float = 0.03         # Base Take-Profit target: +3.0%
-    trailing_stop_activation_pct: float = 0.008  # +0.8% triggers trailing (default: 0.008)
-    trailing_stop_offset_pct: float = 0.003      # 0.3% trailing distance (default: 0.003)
+    trailing_stop_activation_pct: float = 0.005  # +0.5% triggers trailing (default: 0.005)
+    trailing_stop_offset_pct: float = 0.002      # 0.2% trailing distance (default: 0.002)
 
     # Telegram Notification Alerts
     telegram_bot_token: Optional[str] = None
@@ -133,18 +133,18 @@ class TradingConfig:
         check_sec_raw = os.getenv("CHECK_INTERVAL_SECONDS") or os.getenv("POLL_INTERVAL_SECONDS", "10")
         poll_interval_seconds = int(check_sec_raw)
 
-        # TRAILING_STOP_ACTIVATION_PCT: float, default 0.008 (+0.8% profit triggers trailing)
-        trailing_act_raw = float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "0.008"))
+        # TRAILING_STOP_ACTIVATION_PCT: float, default 0.005 (+0.5% profit triggers trailing)
+        trailing_act_raw = float(os.getenv("TRAILING_STOP_ACTIVATION_PCT", "0.005"))
         trailing_stop_activation_pct = trailing_act_raw / 100.0 if trailing_act_raw >= 0.05 else trailing_act_raw
 
-        # TRAILING_STOP_OFFSET_PCT: float, default 0.003 (locks profit on 0.3% retracement)
-        trailing_offset_raw = float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.003"))
+        # TRAILING_STOP_OFFSET_PCT: float, default 0.002 (locks profit on 0.2% retracement)
+        trailing_offset_raw = float(os.getenv("TRAILING_STOP_OFFSET_PCT", "0.002"))
         trailing_stop_offset_pct = trailing_offset_raw / 100.0 if trailing_offset_raw >= 0.05 else trailing_offset_raw
 
         # RSI thresholds: RSI_OVERSOLD (default 38.0), RSI_OVERBOUGHT (default 68.0)
         rsi_oversold = float(os.getenv("RSI_OVERSOLD", "38.0"))
         rsi_overbought = float(os.getenv("RSI_OVERBOUGHT", "68.0"))
-        bollinger_b_entry = float(os.getenv("BOLLINGER_B_ENTRY", "0.15"))
+        bollinger_b_entry = float(os.getenv("BOLLINGER_B_ENTRY", "0.20"))
 
         # Stop-Loss and Take-Profit
         sl_raw = float(os.getenv("STOP_LOSS_PERCENT", "2.0"))

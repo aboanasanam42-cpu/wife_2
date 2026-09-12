@@ -46,10 +46,12 @@ class SpotStrategy:
         ema_period: int = 20,
         bollinger_period: int = 20,
         bollinger_std: float = 2.0,
-        bollinger_b_entry: float = 0.15,
+        bollinger_b_entry: float = 0.20,
         atr_period: int = 14,
         stop_loss_pct: float = 0.02,
         take_profit_pct: float = 0.03,
+        trailing_stop_activation_pct: float = 0.005,
+        trailing_stop_offset_pct: float = 0.002,
         min_slot_price_diff_pct: float = 0.006,
     ):
         self.rsi_period = rsi_period
@@ -62,6 +64,8 @@ class SpotStrategy:
         self.atr_period = atr_period
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.trailing_stop_activation_pct = trailing_stop_activation_pct
+        self.trailing_stop_offset_pct = trailing_stop_offset_pct
         self.min_slot_price_diff_pct = min_slot_price_diff_pct
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -109,12 +113,15 @@ class SpotStrategy:
         rsi: float,
         pct_b: float,
         symbol: Optional[str] = None,
+        prev_rsi: Optional[float] = None,
+        df: Optional[pd.DataFrame] = None,
     ) -> Optional[SignalResult]:
         """
         Evaluates an individual active slot for immediate exit triggers:
         1. Trailing stop floor breached or Hard Stop-Loss (-2.0%) breached
         2. Base Take-Profit reached (+3.0%)
-        3. Overbought exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT
+        3. Secondary Momentum Protection: RSI reaches a peak and decisively hooks downward (rsi[-1] < rsi[-2]) while in profit
+        4. Overbought exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT while in profit
         """
         if not slot.get("active"):
             return None
@@ -131,10 +138,10 @@ class SpotStrategy:
 
         pnl_pct = ((current_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
 
-        # 1. Trailing Stop Floor OR Hard Stop-Loss Hit
+        # 1. Dynamic Trailing Stop Floor OR Hard Stop-Loss Hit
         if current_price <= sl_price:
-            is_trailing = highest_price > (entry_price * 1.005)
-            label = "Trailing Stop Floor Hit" if is_trailing else "Hard Stop-Loss (-2.0%) Hit"
+            is_trailing = highest_price > (entry_price * (1.0 + self.trailing_stop_activation_pct))
+            label = "Trailing Stop Floor Hit" if is_trailing else f"Hard Stop-Loss (-{self.stop_loss_pct * 100.0:.1f}%) Hit"
             reason = f"{label} on {slot_id} ({slot_symbol}) at {format_token_price(current_price)} (Floor: {format_token_price(sl_price)}, PnL: {pnl_pct:+.2f}%)"
             return SignalResult(
                 action="SELL",
@@ -161,7 +168,35 @@ class SpotStrategy:
                 target_slot_id=slot_id,
             )
 
-        # 3. Overbought Peak Exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT
+        # 3. Secondary Momentum Protection:
+        # If RSI reaches a peak and decisively hooks downward (rsi.iloc[-1] < rsi.iloc[-2]) while in profit, trigger immediate exit
+        rsi_prev_val = prev_rsi
+        rsi_prev2_val = None
+        if df is not None and "rsi" in df.columns and len(df) >= 3:
+            rsi_prev_val = float(df["rsi"].iloc[-2])
+            rsi_prev2_val = float(df["rsi"].iloc[-3])
+
+        if pnl_pct > 0.0 and rsi_prev_val is not None:
+            # Check downward hook: rsi.iloc[-1] < rsi.iloc[-2]
+            # Peak condition: previous candle was ascending or elevated momentum
+            is_peak_hook = (rsi < rsi_prev_val) and (rsi_prev2_val is None or rsi_prev_val >= rsi_prev2_val or rsi_prev_val >= 50.0)
+            if is_peak_hook:
+                reason = (
+                    f"RSI Peak Hookdown Momentum Exit on {slot_id} ({slot_symbol}) at {format_token_price(current_price)} "
+                    f"(RSI hooked downward {rsi_prev_val:.1f} -> {rsi:.1f} while in profit: {pnl_pct:+.2f}%)"
+                )
+                return SignalResult(
+                    action="SELL",
+                    price=current_price,
+                    rsi_value=rsi,
+                    percent_b=pct_b,
+                    atr_value=0.0,
+                    reason=reason,
+                    symbol=slot_symbol,
+                    target_slot_id=slot_id,
+                )
+
+        # 4. Overbought Peak Exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT while in profit
         if pct_b >= 0.95 and rsi >= self.rsi_overbought and pnl_pct > 0.0:
             reason = (
                 f"Overbought Exhaustion Exit on {slot_id} ({slot_symbol}) at {format_token_price(current_price)} "
@@ -229,48 +264,73 @@ class SpotStrategy:
         available_slot_id: Optional[str],
     ) -> SignalResult:
         """
-        Dip Trigger:
-        Returns BUY when:
-        1. %B <= 0.15 AND RSI <= RSI_OVERSOLD (default 36.0)
-        OR
-        2. Bullish Reversal Divergence: previous %B <= 0.05 and current %B > previous %B with RSI <= RSI_OVERSOLD + 4.0
+        Dynamic RSI Trough-Hook & Slope-Reversal Strategy:
+        1. Calculate 14-period RSI as normal.
+        2. Entry Trigger (Dynamic Momentum Reversal):
+           Detect when RSI forms an inflection trough / bullish hook:
+           rsi.iloc[-2] < rsi.iloc[-3] AND rsi.iloc[-1] > rsi.iloc[-2] (Momentum turning upward).
+        3. Combine this inflection with Bollinger Band lower band proximity (%B <= 0.20 or price bouncing off lower band)
+           to ensure entry occurs at local dips rather than mid-air.
+        4. Completely removes reliance on rigid fixed-number limits for RSI entries.
         """
         if available_slot_id is None:
             return SignalResult(
                 action="HOLD",
-                price=float(df.iloc[-1]["close"]),
-                rsi_value=float(df.iloc[-1]["rsi"]),
-                percent_b=float(df.iloc[-1]["bb_percent_b"]),
-                atr_value=float(df.iloc[-1]["atr"]),
+                price=float(df.iloc[-1]["close"]) if not df.empty else 0.0,
+                rsi_value=float(df.iloc[-1]["rsi"]) if not df.empty and "rsi" in df.columns else 50.0,
+                percent_b=float(df.iloc[-1]["bb_percent_b"]) if not df.empty and "bb_percent_b" in df.columns else 0.5,
+                atr_value=float(df.iloc[-1]["atr"]) if not df.empty and "atr" in df.columns else 0.0,
                 symbol=symbol,
                 reason="All permissible slots currently occupied. Waiting for an exit.",
             )
 
+        if len(df) < 4:
+            return SignalResult(
+                action="HOLD",
+                price=float(df.iloc[-1]["close"]) if not df.empty else 0.0,
+                rsi_value=float(df.iloc[-1]["rsi"]) if not df.empty and "rsi" in df.columns else 50.0,
+                percent_b=float(df.iloc[-1]["bb_percent_b"]) if not df.empty and "bb_percent_b" in df.columns else 0.5,
+                atr_value=float(df.iloc[-1]["atr"]) if not df.empty and "atr" in df.columns else 0.0,
+                symbol=symbol,
+                reason=f"Insufficient candles ({len(df)} < 4) to evaluate RSI trough hook.",
+            )
+
         last = df.iloc[-1]
         prev = df.iloc[-2]
+        prev2 = df.iloc[-3]
 
         current_price = float(last["close"])
-        rsi = float(last["rsi"])
+        rsi_current = float(last["rsi"])
         pct_b = float(last["bb_percent_b"])
         atr = float(last["atr"])
+
+        rsi_prev = float(prev["rsi"])
+        rsi_prev2 = float(prev2["rsi"])
         prev_pct_b = float(prev["bb_percent_b"])
+        bb_lower = float(last.get("bb_lower", 0.0))
+        prev_bb_lower = float(prev.get("bb_lower", 0.0))
 
-        # Dip Trigger 1: Deep lower band penetration (%B <= bollinger_b_entry) & RSI <= RSI_OVERSOLD
-        dip_trigger = (pct_b <= self.bollinger_b_entry) and (rsi <= self.rsi_oversold)
+        # 1. Dynamic Momentum Reversal: RSI forms an inflection trough / bullish hook
+        # rsi.iloc[-2] < rsi.iloc[-3] AND rsi.iloc[-1] > rsi.iloc[-2] (Momentum turning upward)
+        rsi_trough_hook = (rsi_prev < rsi_prev2) and (rsi_current > rsi_prev)
 
-        # Dip Trigger 2: Bullish Reversal Divergence from oversold floor
-        divergence_trigger = (prev_pct_b <= 0.05 and pct_b > prev_pct_b) and (rsi <= self.rsi_oversold + 4.0)
+        # 2. Bollinger Band lower band proximity (%B <= 0.20 or price bouncing off lower band)
+        # Ensures entry occurs at local dips rather than mid-air
+        entry_bb_threshold = max(self.bollinger_b_entry, 0.20)
+        is_bb_dip = pct_b <= entry_bb_threshold
+        is_bb_bounce = (prev_pct_b <= entry_bb_threshold and pct_b > prev_pct_b) or (
+            float(last.get("low", current_price)) <= bb_lower and current_price >= bb_lower
+        )
+        is_lower_band_proximity = is_bb_dip or is_bb_bounce
 
-        if dip_trigger or divergence_trigger:
-            trigger_type = f"Dip Trigger (%B<={self.bollinger_b_entry:.2f} & RSI<=oversold)" if dip_trigger else "Bullish Divergence Reversal"
-
+        if rsi_trough_hook and is_lower_band_proximity:
             # Verify Anti-Clustering spacing against open slots holding this symbol
             can_enter, decouple_reason = self.evaluate_entry_decoupling(current_price, active_slots, symbol=symbol)
             if not can_enter:
                 return SignalResult(
                     action="HOLD",
                     price=current_price,
-                    rsi_value=rsi,
+                    rsi_value=rsi_current,
                     percent_b=pct_b,
                     atr_value=atr,
                     symbol=symbol,
@@ -282,13 +342,15 @@ class SpotStrategy:
             dynamic_tp = current_price + max(2.5 * atr, current_price * self.take_profit_pct)
 
             reason = (
-                f"{trigger_type} for {available_slot_id} on {symbol}: %B={pct_b:.2f}, RSI={rsi:.1f}, ATR={atr:.4f}. "
+                f"Dynamic RSI Trough-Hook & Slope-Reversal for {available_slot_id} on {symbol}: "
+                f"RSI Hook [{rsi_prev2:.1f} -> {rsi_prev:.1f} -> {rsi_current:.1f}], "
+                f"%B={pct_b:.2f} (lower proximity <= {entry_bb_threshold:.2f}), ATR={atr:.4f}. "
                 f"Decoupled from existing slots."
             )
             return SignalResult(
                 action="BUY",
                 price=current_price,
-                rsi_value=rsi,
+                rsi_value=rsi_current,
                 percent_b=pct_b,
                 atr_value=atr,
                 symbol=symbol,
@@ -301,9 +363,12 @@ class SpotStrategy:
         return SignalResult(
             action="HOLD",
             price=current_price,
-            rsi_value=rsi,
+            rsi_value=rsi_current,
             percent_b=pct_b,
             atr_value=atr,
             symbol=symbol,
-            reason=f"Scanning {symbol} for micro-dips (%B: {pct_b:.2f}, RSI: {rsi:.1f}, ATR: {atr:.4f})",
+            reason=(
+                f"Scanning {symbol} for Dynamic RSI Trough-Hook & %B dip "
+                f"(RSI: {rsi_prev2:.1f} -> {rsi_prev:.1f} -> {rsi_current:.1f}, %B: {pct_b:.2f}, ATR: {atr:.4f})"
+            ),
         )
