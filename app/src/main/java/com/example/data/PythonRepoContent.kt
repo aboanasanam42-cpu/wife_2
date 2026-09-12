@@ -374,7 +374,16 @@ load_dotenv()
 class TradingConfig:
     mexc_api_key: str
     mexc_api_secret: str
-    trade_symbols: list[str] = field(default_factory=lambda: ["SOL/USDT", "DOGE/USDT"])
+    trade_symbols: list[str] = field(
+        default_factory=lambda: [
+            "SOL/USDT",
+            "DOGE/USDT",
+            "PEPE/USDT",
+            "SHIB/USDT",
+            "NEAR/USDT",
+            "SUI/USDT",
+        ]
+    )
     timeframe: str = "1m"
     poll_interval_seconds: int = 10
     log_level: str = "INFO"
@@ -409,8 +418,11 @@ class TradingConfig:
 
     @classmethod
     def load_from_env(cls) -> "TradingConfig":
-        raw_symbol = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR", "SOL/USDT,DOGE/USDT")
-        pairs = [p.strip().upper() for p in raw_symbol.split(",") if p.strip()] or ["SOL/USDT", "DOGE/USDT"]
+        default_str = "SOL/USDT,DOGE/USDT,PEPE/USDT,SHIB/USDT,NEAR/USDT,SUI/USDT"
+        raw_symbol = os.getenv("TRADE_SYMBOL") or os.getenv("PAIR", default_str)
+        pairs = [p.strip().upper() for p in raw_symbol.split(",") if p.strip()] or [
+            "SOL/USDT", "DOGE/USDT", "PEPE/USDT", "SHIB/USDT", "NEAR/USDT", "SUI/USDT"
+        ]
         slot_sz = float(os.getenv("SLOT_SIZE_USDT") or os.getenv("TRADE_AMOUNT_USDT", "4.0"))
         max_s = int(os.getenv("INITIAL_MAX_SLOTS") or os.getenv("MAX_OPEN_TRADES", "2"))
         min_diff = float(os.getenv("MIN_SLOT_PRICE_DIFF_PCT", "0.006"))
@@ -478,9 +490,11 @@ class MexcSpotClient:
         return {"id": order.get("id"), "price": exec_price, "amount": float(order.get("filled", 0.0)), "cost": float(order.get("cost", usdt_amount))}
 
     def execute_market_sell(self, symbol: str, token_amount: float):
-        order = self.exchange.create_order(symbol=symbol, type="market", side="sell", amount=token_amount)
+        # Strict exchange.amount_to_precision avoiding float e-notation for micro-assets (PEPE, SHIB)
+        amt = float(self.exchange.amount_to_precision(symbol, token_amount)) if hasattr(self.exchange, "amount_to_precision") else token_amount
+        order = self.exchange.create_order(symbol=symbol, type="market", side="sell", amount=amt)
         exec_price = float(order.get("price", 0.0))
-        return {"id": order.get("id"), "price": exec_price, "amount": float(order.get("filled", token_amount)), "cost": float(order.get("cost", 0.0))}
+        return {"id": order.get("id"), "price": exec_price, "amount": float(order.get("filled", amt)), "cost": float(order.get("cost", 0.0))}
             """.trimIndent()
         ),
         PythonFileItem(

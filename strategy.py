@@ -13,6 +13,16 @@ import logging
 logger = logging.getLogger("mexc_trader.strategy")
 
 
+def format_token_price(price: float) -> str:
+    """Formats price string nicely, supporting sub-cent tokens like PEPE/SHIB without scientific notation."""
+    if price >= 1.0:
+        return f"${price:,.4f}"
+    elif price >= 0.001:
+        return f"${price:.6f}"
+    else:
+        return f"${price:.10f}".rstrip("0").rstrip(".")
+
+
 @dataclass
 class SignalResult:
     action: str  # "BUY", "SELL", "HOLD"
@@ -125,7 +135,7 @@ class SpotStrategy:
         if current_price <= sl_price:
             is_trailing = highest_price > (entry_price * 1.005)
             label = "Trailing Stop Floor Hit" if is_trailing else "Hard Stop-Loss (-2.0%) Hit"
-            reason = f"{label} on {slot_id} ({slot_symbol}) at ${current_price:,.4f} (Floor: ${sl_price:,.4f}, PnL: {pnl_pct:+.2f}%)"
+            reason = f"{label} on {slot_id} ({slot_symbol}) at {format_token_price(current_price)} (Floor: {format_token_price(sl_price)}, PnL: {pnl_pct:+.2f}%)"
             return SignalResult(
                 action="SELL",
                 price=current_price,
@@ -139,7 +149,7 @@ class SpotStrategy:
 
         # 2. Hard Take-Profit Target Reached
         if current_price >= tp_price:
-            reason = f"Take-Profit Target Hit on {slot_id} ({slot_symbol}) at ${current_price:,.4f} (Target: ${tp_price:,.4f}, PnL: {pnl_pct:+.2f}%)"
+            reason = f"Take-Profit Target Hit on {slot_id} ({slot_symbol}) at {format_token_price(current_price)} (Target: {format_token_price(tp_price)}, PnL: {pnl_pct:+.2f}%)"
             return SignalResult(
                 action="SELL",
                 price=current_price,
@@ -154,7 +164,7 @@ class SpotStrategy:
         # 3. Overbought Peak Exhaustion: %B >= 0.95 and RSI >= RSI_OVERBOUGHT
         if pct_b >= 0.95 and rsi >= self.rsi_overbought and pnl_pct > 0.0:
             reason = (
-                f"Overbought Exhaustion Exit on {slot_id} ({slot_symbol}) at ${current_price:,.4f} "
+                f"Overbought Exhaustion Exit on {slot_id} ({slot_symbol}) at {format_token_price(current_price)} "
                 f"(%B: {pct_b:.2f} >= 0.95, RSI: {rsi:.1f} >= {self.rsi_overbought:.1f}, PnL: {pnl_pct:+.2f}%)"
             )
             return SignalResult(
@@ -204,8 +214,8 @@ class SpotStrategy:
             diff_pct = abs(current_price - entry_p) / entry_p * 100.0
             if diff_pct < threshold_pct:
                 return False, (
-                    f"Anti-Clustering block: Current price ${current_price:,.4f} is {diff_pct:.2f}% "
-                    f"from {slot.get('slot_id')} entry (${entry_p:,.4f}) for {symbol}. "
+                    f"Anti-Clustering block: Current price {format_token_price(current_price)} is {diff_pct:.2f}% "
+                    f"from {slot.get('slot_id')} entry ({format_token_price(entry_p)}) for {symbol}. "
                     f"Requires >={threshold_pct:.2f}% spacing."
                 )
 

@@ -12,6 +12,26 @@ import requests
 logger = logging.getLogger("mexc_trader.notifier")
 
 
+def format_token_price(price: float) -> str:
+    """Formats price string with appropriate precision for micro-cap assets."""
+    if price >= 1.0:
+        return f"${price:,.4f}"
+    elif price >= 0.001:
+        return f"${price:.6f}"
+    else:
+        return f"${price:.10f}".rstrip("0").rstrip(".")
+
+
+def format_token_amount(amount: float) -> str:
+    """Formats quantity string without truncating large quantities or micro-cap precision."""
+    if amount >= 1000.0:
+        return f"{amount:,.2f}"
+    elif amount >= 1.0:
+        return f"{amount:,.4f}"
+    else:
+        return f"{amount:.8f}".rstrip("0").rstrip(".")
+
+
 class TelegramNotifier:
     def __init__(self, bot_token: Optional[str], chat_id: Optional[str]):
         self.bot_token = bot_token
@@ -86,16 +106,18 @@ class TelegramNotifier:
         reason: str,
     ):
         """Dispatched when an individual slot opens."""
+        formatted_price = format_token_price(price)
+        formatted_amount = format_token_amount(amount)
         msg = (
             f"🟢 <b>MULTI-SLOT BUY: {slot_id.upper()} FILLED</b>\n\n"
             f"• <b>Slot ID:</b> <code>{slot_id}</code>\n"
             f"• <b>Pair:</b> <code>{symbol}</code>\n"
-            f"• <b>Entry Price:</b> <code>${price:,.4f}</code>\n"
-            f"• <b>Quantity:</b> <code>{amount:.6f}</code>\n"
+            f"• <b>Entry Price:</b> <code>{formatted_price}</code>\n"
+            f"• <b>Quantity:</b> <code>{formatted_amount}</code>\n"
             f"• <b>Cost:</b> <code>${cost_usdt:,.2f} USDT</code>\n"
             f"• <b>Slot Utilization:</b> <code>{active_count} / {max_slots} Active</code>\n"
             f"• <b>Trigger:</b> <i>{reason}</i>\n\n"
-            "<i>Trailing take-profit armed (+1.2% activation floor).</i>"
+            "<i>Trailing take-profit armed (+0.8% activation floor).</i>"
         )
         self.send_message(msg)
 
@@ -117,12 +139,15 @@ class TelegramNotifier:
         is_profit = pnl_usdt >= 0
         icon = "💰" if is_profit else "🛑"
         tag = "TAKE-PROFIT" if is_profit else "STOP-LOSS"
+        formatted_price = format_token_price(price)
+        formatted_amount = format_token_amount(amount)
 
         msg = (
             f"{icon} <b>MULTI-SLOT EXIT: {slot_id.upper()} ({tag})</b>\n\n"
             f"• <b>Slot ID:</b> <code>{slot_id}</code>\n"
             f"• <b>Pair:</b> <code>{symbol}</code>\n"
-            f"• <b>Exit Price:</b> <code>${price:,.4f}</code>\n"
+            f"• <b>Exit Price:</b> <code>{formatted_price}</code>\n"
+            f"• <b>Quantity:</b> <code>{formatted_amount}</code>\n"
             f"• <b>Slot Realized PnL:</b> <code>{'+' if is_profit else ''}{pnl_pct:.2f}% ({'+' if is_profit else ''}${pnl_usdt:.2f} USDT)</code>\n"
             f"• <b>Total Lifetime PnL:</b> <code>+${total_pnl_usdt:,.2f} USDT</code>\n"
             f"• <b>Remaining Active Slots:</b> <code>{active_count} / {max_slots}</code>\n"

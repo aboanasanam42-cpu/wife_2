@@ -35,6 +35,16 @@ logger = setup_logger("mexc_trader.main")
 STATE_FILE = "bot_state.json"
 
 
+def format_token_price(price: float) -> str:
+    """Formats price string nicely, using more decimal places for sub-cent tokens."""
+    if price >= 1.0:
+        return f"${price:,.4f}"
+    elif price >= 0.001:
+        return f"${price:.6f}"
+    else:
+        return f"${price:.10f}".rstrip("0").rstrip(".")
+
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Responds to Railway HTTP health probes to confirm service vitality."""
     def do_GET(self):

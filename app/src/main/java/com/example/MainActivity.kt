@@ -202,8 +202,9 @@ fun MexcTradingApp() {
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.exchange", "Connecting to MEXC Spot API with enableRateLimit=True..."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.exchange", "Loaded 2,418 Spot markets successfully."),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.notifier", "Telegram Notifier active. Dispatched startup alert to Chat 987654321."),
-            LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "Multi-Pair Scanner monitoring: SOL/USDT, DOGE/USDT (Slot Size: $4.00 USDT, Reserve: $2.00 USDT)"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.main", "Multi-Pair Scanner monitoring 6 volatile pairs: SOL/USDT, DOGE/USDT, PEPE/USDT, SHIB/USDT, NEAR/USDT, SUI/USDT (Slot Size: $4.00 USDT, Reserve: $2.00 USDT)"),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[SOL/USDT] Close: $145.20 | %B: 0.12 | RSI: 32.1 | ATR: 1.4500 | Signal: BUY (%B <= 0.15 & RSI <= 38.0)"),
+            LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[PEPE/USDT] Close: $0.00000945 | %B: 0.14 | RSI: 36.5 | Lot Precision formatted (No e-notation)"),
             LogEntry(getCurrentTime(), "INFO", "mexc_trader.strategy", "[DOGE/USDT] Close: $0.1245 | %B: 0.44 | RSI: 48.6 | ATR: 0.0032 | Signal: HOLD")
         )
     }
@@ -555,16 +556,24 @@ fun MonitorTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Pair Selector Chips
-        Row(
+        // Pair Selector Chips (Scrollable row supporting 6 volatile assets)
+        androidx.compose.foundation.lazy.LazyRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("SOLUSDT" to "SOL/USDT", "DOGEUSDT" to "DOGE/USDT", "BTCUSDT" to "BTC/USDT").forEach { (code, label) ->
+            val pairs = listOf(
+                "SOLUSDT" to "SOL/USDT",
+                "DOGEUSDT" to "DOGE/USDT",
+                "PEPEUSDT" to "PEPE/USDT",
+                "SHIBUSDT" to "SHIB/USDT",
+                "NEARUSDT" to "NEAR/USDT",
+                "SUIUSDT" to "SUI/USDT"
+            )
+            items(pairs.size) { index ->
+                val (code, label) = pairs[index]
                 val isSelected = selectedSymbol == code
                 Box(
                     modifier = Modifier
-                        .weight(1f)
                         .clip(RoundedCornerShape(12.dp))
                         .background(if (isSelected) Slate800 else Slate900)
                         .border(
@@ -573,7 +582,7 @@ fun MonitorTab(
                             shape = RoundedCornerShape(12.dp)
                         )
                         .clickable { onSymbolSelected(code) }
-                        .padding(vertical = 10.dp),
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(

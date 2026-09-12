@@ -6,6 +6,7 @@ and order execution with robust error handling for spot trading only.
 
 import time
 import logging
+from decimal import Decimal
 from typing import Dict, Any, List, Optional
 import ccxt
 import pandas as pd
@@ -126,6 +127,55 @@ class MexcSpotClient:
             "price_precision": int(price_precision) if price_precision is not None else 2,
         }
 
+    def format_amount_precision(self, symbol: str, amount: float) -> float:
+        """
+        Formats order amount strictly via exchange.amount_to_precision or symbol precision rules.
+        Guarantees plain decimal string representation without float scientific notation (e-notation),
+        which is vital for micro-priced tokens such as PEPE and SHIB with large token quantities.
+        """
+        if hasattr(self.exchange, "amount_to_precision"):
+            try:
+                prec_str = self.exchange.amount_to_precision(symbol, amount)
+                if prec_str is not None:
+                    # Convert via Decimal to guard against scientific notation string representation
+                    dec_val = Decimal(str(prec_str))
+                    # Format with full standard notation (f) rather than exponential notation (e)
+                    return float(f"{dec_val:f}")
+            except Exception as e:
+                logger.debug("exchange.amount_to_precision failed for %s (%s): %s", symbol, amount, e)
+
+        constraints = self.get_symbol_constraints(symbol)
+        precision = constraints.get("amount_precision", 6)
+        try:
+            # Fallback formatting without scientific notation
+            dec_val = Decimal(str(amount))
+            return float(f"{dec_val:.{precision}f}")
+        except Exception:
+            return float(f"{amount:.{precision}f}")
+
+    def format_price_precision(self, symbol: str, price: float) -> float:
+        """
+        Formats order price strictly via exchange.price_to_precision or symbol precision rules.
+        Guarantees plain decimal string representation without scientific notation,
+        crucial for sub-cent assets like PEPE and SHIB ($0.00001xxx).
+        """
+        if hasattr(self.exchange, "price_to_precision"):
+            try:
+                prec_str = self.exchange.price_to_precision(symbol, price)
+                if prec_str is not None:
+                    dec_val = Decimal(str(prec_str))
+                    return float(f"{dec_val:f}")
+            except Exception as e:
+                logger.debug("exchange.price_to_precision failed for %s (%s): %s", symbol, price, e)
+
+        constraints = self.get_symbol_constraints(symbol)
+        precision = constraints.get("price_precision", 8)
+        try:
+            dec_val = Decimal(str(price))
+            return float(f"{dec_val:.{precision}f}")
+        except Exception:
+            return float(f"{price:.{precision}f}")
+
     def execute_market_buy(
         self,
         symbol: str,
@@ -191,9 +241,11 @@ class MexcSpotClient:
                 price=None,
                 params={"quoteOrderQty": usdt_amount},
             )
-            # Normalize response fields
-            exec_price = float(order.get("price") or current_ask)
-            filled_amount = float(order.get("filled") or (usdt_amount / exec_price))
+            # Normalize response fields with precision protection
+            raw_exec_price = float(order.get("price") or current_ask)
+            exec_price = self.format_price_precision(symbol, raw_exec_price)
+            raw_filled = float(order.get("filled") or (usdt_amount / exec_price))
+            filled_amount = self.format_amount_precision(symbol, raw_filled)
             cost = float(order.get("cost") or usdt_amount)
 
             # Check slippage
@@ -246,17 +298,8 @@ class MexcSpotClient:
                 "fee": cost * 0.001,
             }
 
-        constraints = self.get_symbol_constraints(symbol)
-        precision = constraints.get("amount_precision", 6)
-        
-        # Use CCXT's exchange.amount_to_precision when available for exact lot sizing
-        if hasattr(self.exchange, "amount_to_precision"):
-            try:
-                formatted_amount = float(self.exchange.amount_to_precision(symbol, token_amount))
-            except Exception:
-                formatted_amount = float(f"{token_amount:.{precision}f}")
-        else:
-            formatted_amount = float(f"{token_amount:.{precision}f}")
+        # Use CCXT's exchange.amount_to_precision with non-scientific Decimal protection
+        formatted_amount = self.format_amount_precision(symbol, token_amount)
 
         logger.info("Dispatching MEXC Spot Market SELL for %s: %s tokens", symbol, formatted_amount)
         try:
@@ -266,7 +309,8 @@ class MexcSpotClient:
                 side="sell",
                 amount=formatted_amount,
             )
-            exec_price = float(order.get("price") or current_bid)
+            raw_exec_price = float(order.get("price") or current_bid)
+            exec_price = self.format_price_precision(symbol, raw_exec_price)
             filled_amount = float(order.get("filled") or formatted_amount)
             cost = float(order.get("cost") or (filled_amount * exec_price))
 
