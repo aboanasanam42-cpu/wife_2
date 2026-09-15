@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from config import (
+    BUY_COOLDOWN_SEC,
     CASH_RESERVE_USDT,
     LIVE_TRADING,
     LOOP_INTERVAL_SECONDS,
@@ -46,10 +47,12 @@ def load_state():
     ensure_state_directory()
 
     if not os.path.exists(STATE_FILE):
-        return {
+        state = {
             "positions": [],
             "last_buy_time": 0.0,
         }
+        save_state(state)
+        return state
 
     try:
         with open(
@@ -676,7 +679,7 @@ def run_cycle(
         )
     )
 
-    buy_cooldown_seconds = 30
+    buy_cooldown_seconds = max(0, BUY_COOLDOWN_SEC)
 
     if cooldown < buy_cooldown_seconds:
         remaining = (

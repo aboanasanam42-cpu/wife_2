@@ -111,11 +111,18 @@ class MEXCClient:
         cost_limits = limits.get("cost", {}) or {}
 
         min_cost = cost_limits.get("min")
+        max_cost = cost_limits.get("max")
 
         if min_cost is not None and cost_usdt < float(min_cost):
             raise ValueError(
                 f"Buy cost {cost_usdt} USDT is below "
                 f"MEXC minimum cost {min_cost} USDT"
+            )
+
+        if max_cost is not None and cost_usdt > float(max_cost):
+            raise ValueError(
+                f"Buy cost {cost_usdt} USDT exceeds "
+                f"MEXC maximum cost {max_cost} USDT"
             )
 
         quote_currency = market["quote"]
@@ -134,6 +141,23 @@ class MEXCClient:
                 f"available={available:.8f}"
             )
 
+        price = self.last_price()
+        estimated_amount = cost_usdt / price
+        amount_limits = limits.get("amount", {}) or {}
+        min_amount = amount_limits.get("min")
+        max_amount = amount_limits.get("max")
+
+        if min_amount is not None and estimated_amount < float(min_amount):
+            raise ValueError(
+                f"Estimated buy amount {estimated_amount} is below "
+                f"MEXC minimum amount {min_amount}"
+            )
+        if max_amount is not None and estimated_amount > float(max_amount):
+            raise ValueError(
+                f"Estimated buy amount {estimated_amount} exceeds "
+                f"MEXC maximum amount {max_amount}"
+            )
+
         # MEXC supports market-buy-with-cost through CCXT.
         if self.exchange.has.get(
             "createMarketBuyOrderWithCost"
@@ -145,8 +169,6 @@ class MEXCClient:
 
         # Safe fallback:
         # convert the USDT budget into base quantity.
-        price = self.last_price()
-
         amount = cost_usdt / price
 
         amount = self.normalize_amount(amount)
@@ -182,9 +204,27 @@ class MEXCClient:
 
         amount = self.normalize_amount(amount)
 
+        amount_limits = self.market().get("limits", {}).get("amount", {}) or {}
+        min_amount = amount_limits.get("min")
+        max_amount = amount_limits.get("max")
+
+        if min_amount is not None and amount < float(min_amount):
+            raise ValueError(
+                f"Sell amount {amount} is below MEXC minimum amount {min_amount}"
+            )
+        if max_amount is not None and amount > float(max_amount):
+            amount = self.normalize_amount(float(max_amount))
+
         if amount <= 0:
             raise RuntimeError(
                 "Calculated market-sell amount is zero"
+            )
+
+        min_cost = (self.market().get("limits", {}).get("cost", {}) or {}).get("min")
+        if min_cost is not None and amount * self.last_price() < float(min_cost):
+            raise ValueError(
+                f"Sell value {amount * self.last_price():.8f} is below "
+                f"MEXC minimum cost {min_cost}"
             )
 
         return self.exchange.create_market_sell_order(

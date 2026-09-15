@@ -36,6 +36,16 @@ class SignalResult:
 
 
 class SpotStrategy:
+    REQUIRED_INDICATOR_COLUMNS = (
+        "rsi",
+        "bb_percent_b",
+        "atr",
+        "ema",
+        "ema_slope",
+        "bb_upper",
+        "bb_lower",
+    )
+
     def __init__(
         self,
         rsi_period: int = 14,
@@ -67,29 +77,55 @@ class SpotStrategy:
         self.min_slot_price_diff_pct = min_slot_price_diff_pct
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        required_price_columns = {"high", "low", "close"}
+        missing_price_columns = required_price_columns.difference(df.columns)
+        if missing_price_columns:
+            raise RuntimeError(
+                "Cannot calculate indicators; missing price columns: "
+                + ", ".join(sorted(missing_price_columns))
+            )
+
         df = df.copy()
-        sma = df["close"].rolling(window=self.bollinger_period).mean()
-        std = df["close"].rolling(window=self.bollinger_period).std()
+        for column in ("high", "low", "close"):
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+        df = df.dropna(subset=["high", "low", "close"])
+        if df.empty:
+            return df
+
+        close = df["close"]
+        sma = close.rolling(window=self.bollinger_period, min_periods=1).mean()
+        std = close.rolling(window=self.bollinger_period, min_periods=1).std(ddof=0).fillna(0.0)
         df["bb_upper"] = sma + (std * self.bollinger_std)
         df["bb_lower"] = sma - (std * self.bollinger_std)
         df["bb_middle"] = sma
         band_diff = df["bb_upper"] - df["bb_lower"]
-        df["bb_percent_b"] = np.where(band_diff > 0, (df["close"] - df["bb_lower"]) / band_diff, 0.5)
+        df["bb_percent_b"] = np.where(
+            band_diff > 0,
+            (close - df["bb_lower"]) / band_diff,
+            0.5,
+        )
 
-        delta = df["close"].diff()
-        gain = delta.where(delta > 0, 0.0).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0.0)).rolling(window=self.rsi_period).mean()
-        rs = gain / loss.replace(0, np.nan)
-        df["rsi"] = (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
+        delta = close.diff().fillna(0.0)
+        gain = delta.clip(lower=0).rolling(window=self.rsi_period, min_periods=1).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=self.rsi_period, min_periods=1).mean()
+        rs = gain.div(loss.replace(0, np.nan))
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        df["rsi"] = rsi.where(loss > 0, 100.0).where(gain > 0, 50.0).fillna(50.0)
 
-        df["ema"] = df["close"].ewm(span=self.ema_period, adjust=False).mean()
-        df["ema_slope"] = df["ema"].diff()
+        df["ema"] = close.ewm(span=self.ema_period, adjust=False).mean()
+        df["ema_slope"] = df["ema"].diff().fillna(0.0)
 
         high_low = df["high"] - df["low"]
-        high_close = (df["high"] - df["close"].shift()).abs()
-        low_close = (df["low"] - df["close"].shift()).abs()
+        high_close = (df["high"] - close.shift()).abs()
+        low_close = (df["low"] - close.shift()).abs()
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df["atr"] = true_range.rolling(window=self.atr_period).mean().bfill()
+        df["atr"] = true_range.rolling(window=self.atr_period, min_periods=1).mean().fillna(0.0)
+
+        for column in self.REQUIRED_INDICATOR_COLUMNS:
+            df[column] = pd.to_numeric(df[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            df[column] = df[column].ffill().bfill().fillna(0.0)
+
         return df
 
     def evaluate_slot_exit(
@@ -196,6 +232,33 @@ class SpotStrategy:
         """
         if df.empty:
             return SignalResult("HOLD", 0.0, 50.0, 0.5, 0.0, "No market data.", symbol=symbol)
+
+        indicators_ready = all(
+            column in df.columns
+            and pd.to_numeric(df[column], errors="coerce").replace([np.inf, -np.inf], np.nan).notna().all()
+            for column in self.REQUIRED_INDICATOR_COLUMNS
+        )
+        missing_columns = [
+            column
+            for column in self.REQUIRED_INDICATOR_COLUMNS
+            if column not in df.columns
+        ]
+        if missing_columns or not indicators_ready:
+            df = self.calculate_indicators(df)
+            missing_columns = [
+                column
+                for column in self.REQUIRED_INDICATOR_COLUMNS
+                if column not in df.columns
+            ]
+            if missing_columns:
+                raise RuntimeError(
+                    "Strategy indicators are missing after calculation: "
+                    + ", ".join(missing_columns)
+                )
+
+        if df.empty:
+            return SignalResult("HOLD", 0.0, 50.0, 0.5, 0.0, "No valid market data after indicator calculation.", symbol=symbol)
+
         last = df.iloc[-1]
         current_price = float(last["close"])
         rsi_current = float(last["rsi"])
