@@ -25,8 +25,8 @@ def env_int(name: str, default: int = 0) -> int:
 MEXC_API_KEY = os.getenv("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "").strip()
 
-SYMBOL = os.getenv("SYMBOL", "BTC/USDT").strip()
-TIMEFRAME = os.getenv("TIMEFRAME", "1m").strip()
+SYMBOL = "BTC/USDT"
+TIMEFRAME = "1m"
 
 TRADE_AMOUNT_USDT = env_float("TRADE_AMOUNT_USDT", 5.5)
 
@@ -66,6 +66,11 @@ MIN_SLOT_PRICE_DIFF_PCT = env_float(
 )
 
 BUY_COOLDOWN_SEC = env_int("BUY_COOLDOWN_SEC", 30)
+
+TRAILING_CONFIRMATION_CANDLES = max(
+    1,
+    env_int("TRAILING_CONFIRMATION_CANDLES", 1),
+)
 
 MAX_HOLD_TIME_SEC = env_int("MAX_HOLD_TIME_SEC", 1200)
 

@@ -237,3 +237,31 @@ class MEXCClient:
             order_id,
             SYMBOL,
         )
+
+    def confirm_order(self, order: dict):
+        order_id = order.get("id")
+        if order_id:
+            try:
+                confirmed = self.fetch_order(order_id)
+                if confirmed:
+                    order = confirmed
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not confirm MEXC order {order_id}: {exc}"
+                ) from exc
+
+        status = str(order.get("status") or "").lower()
+        filled = float(order.get("filled") or 0.0)
+        if status in {"canceled", "cancelled", "rejected", "expired"}:
+            raise RuntimeError(
+                f"MEXC order {order_id or 'unknown'} was not filled: {status}"
+            )
+        if status and status not in {"closed", "filled"} and filled <= 0:
+            raise RuntimeError(
+                f"MEXC order {order_id or 'unknown'} is not complete: {status}"
+            )
+        if filled <= 0 and not order.get("amount"):
+            raise RuntimeError(
+                f"MEXC order {order_id or 'unknown'} has no filled quantity"
+            )
+        return order

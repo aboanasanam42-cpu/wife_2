@@ -21,6 +21,7 @@ from config import (
     SYMBOL,
     TIMEFRAME,
     TRADE_AMOUNT_USDT,
+    TRAILING_CONFIRMATION_CANDLES,
     TRAILING_STOP_ACTIVATION_PCT,
     TRAILING_STOP_OFFSET_PCT,
 )
@@ -80,6 +81,65 @@ def load_state():
             "positions": [],
             "last_buy_time": 0.0,
         }
+
+
+def reconcile_state_with_wallet(client, state):
+    """Reconcile persisted BTC positions with the real Spot wallet."""
+    balances = client.balance()
+    free_btc = float((balances.get("free", {}) or {}).get("BTC") or 0.0)
+    price = client.last_price()
+    limits = client.market().get("limits", {})
+    min_amount = float((limits.get("amount", {}) or {}).get("min") or 0.0)
+    min_cost = float((limits.get("cost", {}) or {}).get("min") or 0.0)
+
+    active = active_positions(state)
+    if active:
+        position = active[0]
+        if free_btc <= 0 or free_btc < min_amount or free_btc * price < min_cost:
+            position["active"] = False
+            position["reconciled_at"] = utc_now()
+            position["reconciliation_reason"] = "No sellable BTC remained in Spot wallet."
+        else:
+            position["amount"] = min(float(position.get("amount", free_btc)), free_btc)
+            position["highest_price"] = max(
+                float(position.get("highest_price", position.get("entry_price", price))),
+                price,
+            )
+            position["last_observed_price"] = price
+    elif free_btc >= min_amount and free_btc * price >= min_cost:
+        recovered_slot = next_slot_id(state)
+        state["positions"].append(
+            {
+                "slot_id": recovered_slot,
+                "symbol": SYMBOL,
+                "active": True,
+                "amount": free_btc,
+                "entry_price": price,
+                "highest_price": price,
+                "last_observed_price": price,
+                "stop_loss": price * (1.0 - STOP_LOSS_PCT / 100.0),
+                "trailing_active": False,
+                "recovered_from_wallet": True,
+                "opened_at": utc_now(),
+                "opened_at_epoch": time.time(),
+            }
+        )
+        logger.warning(
+            "Recovered wallet position: symbol=%s amount=%.10f price=%.2f",
+            SYMBOL,
+            free_btc,
+            price,
+        )
+
+    save_state(state)
+    logger.info(
+        "WALLET_SYNC symbol=%s BTC_FREE=%.10f USDT_FREE=%.8f active_positions=%d",
+        SYMBOL,
+        free_btc,
+        float((balances.get("free", {}) or {}).get("USDT") or 0.0),
+        len(active_positions(state)),
+    )
+    return state
 
 
 def save_state(state):
@@ -248,7 +308,9 @@ def update_trailing_position(position, current_price):
         current_price,
     )
 
+    previous_price = float(position.get("last_observed_price", entry))
     position["highest_price"] = highest
+    position["last_observed_price"] = current_price
 
     activation = (
         entry
@@ -285,6 +347,14 @@ def update_trailing_position(position, current_price):
 
         position["trailing_active"] = True
 
+        drawdown_pct = (highest - current_price) / highest * 100.0 if highest > 0 else 0.0
+        if current_price < previous_price and drawdown_pct >= TRAILING_STOP_OFFSET_PCT:
+            position["trailing_decline_confirmations"] = int(
+                position.get("trailing_decline_confirmations", 0)
+            ) + 1
+        elif current_price >= previous_price:
+            position["trailing_decline_confirmations"] = 0
+
     return position
 
 
@@ -305,22 +375,17 @@ def should_exit_position(
         )
     )
 
-    take_profit = float(
-        position.get(
-            "take_profit",
-            entry
-            * (
-                1.0
-                + 3.0 / 100.0
-            ),
-        )
-    )
+    if (
+        position.get("trailing_active")
+        and int(position.get("trailing_decline_confirmations", 0))
+        >= TRAILING_CONFIRMATION_CANDLES
+    ):
+        highest = float(position.get("highest_price", entry))
+        drawdown_pct = (highest - current_price) / highest * 100.0 if highest > 0 else 0.0
+        return True, f"Trailing decline from highest price ({drawdown_pct:.3f}%)"
 
     if current_price <= stop:
         return True, "stop-loss/trailing-stop"
-
-    if current_price >= take_profit:
-        return True, "take-profit"
 
     opened_at = float(
         position.get(
@@ -380,14 +445,16 @@ def execute_buy(
     )
 
     logger.warning(
-        "REAL BUY: %.8f USDT of %s",
-        amount_usdt,
+        "SIGNAL=BUY SYMBOL=%s USDT_BALANCE=%.8f BUY_AMOUNT=%.8f",
         SYMBOL,
+        available_usdt,
+        amount_usdt,
     )
 
     order = client.create_market_buy(
         amount_usdt
     )
+    order = client.confirm_order(order)
 
     filled_amount = position_amount_from_order(
         order
@@ -433,6 +500,8 @@ def execute_buy(
         "amount": filled_amount,
         "entry_price": entry,
         "highest_price": entry,
+        "last_observed_price": entry,
+        "trailing_decline_confirmations": 0,
         "stop_loss": stop,
         "take_profit": take_profit,
         "trailing_active": False,
@@ -449,12 +518,12 @@ def execute_buy(
     save_state(state)
 
     logger.warning(
-        "BUY FILLED: slot=%s amount=%s "
-        "entry=%s order=%s",
+        "BUY FILLED: slot=%s amount=%s entry=%s order_id=%s status=%s",
         slot_id,
         filled_amount,
         entry,
         order.get("id"),
+        order.get("status", "unknown"),
     )
 
 
@@ -468,9 +537,9 @@ def execute_sell(
     amount = float(position["amount"])
 
     logger.warning(
-        "REAL SELL: %s %s amount=%s reason=%s",
+        "SIGNAL=SELL SYMBOL=%s ENTRY_PRICE=%.8f SELL_AMOUNT=%.10f reason=%s",
         SYMBOL,
-        position["slot_id"],
+        float(position["entry_price"]),
         amount,
         reason,
     )
@@ -478,6 +547,7 @@ def execute_sell(
     order = client.create_market_sell(
         amount
     )
+    order = client.confirm_order(order)
 
     sold_amount = position_amount_from_order(
         order
@@ -508,11 +578,11 @@ def execute_sell(
     save_state(state)
 
     logger.warning(
-        "SELL FILLED: slot=%s amount=%s "
-        "order=%s estimated_pnl=%+.3f%%",
+        "SELL FILLED: slot=%s amount=%s order_id=%s status=%s estimated_pnl=%+.3f%% POSITION=CLOSED STATE=SEARCHING_BOTTOM",
         position["slot_id"],
         sold_amount,
         order.get("id"),
+        order.get("status", "unknown"),
         position["pnl_pct_estimate"],
     )
 
@@ -522,6 +592,13 @@ def run_cycle(
     strategy,
     state,
 ):
+    if state.get("wallet_reconciliation_pending"):
+        try:
+            reconcile_state_with_wallet(client, state)
+            state.pop("wallet_reconciliation_pending", None)
+        except Exception as exc:
+            logger.error("Wallet reconciliation retry failed: %s", exc)
+
     raw = client.ohlcv(
         timeframe=TIMEFRAME,
         limit=100,
@@ -604,6 +681,23 @@ def run_cycle(
             current_price,
         )
 
+        highest_price = float(position.get("highest_price", position["entry_price"]))
+        drawdown_pct = (
+            (highest_price - current_price) / highest_price * 100.0
+            if highest_price > 0
+            else 0.0
+        )
+        logger.info(
+            "PRICE=%.2f STATE=%s ENTRY_PRICE=%.2f HIGHEST_PRICE=%.2f "
+            "DRAWDOWN_FROM_HIGH=%.3f%%",
+            current_price,
+            "TRAILING" if position.get("trailing_active") else "TRACKING",
+            float(position["entry_price"]),
+            highest_price,
+            drawdown_pct,
+        )
+        save_state(state)
+
         exit_now, reason = should_exit_position(
             position,
             current_price,
@@ -650,7 +744,7 @@ def run_cycle(
     )
 
     logger.info(
-        "price=%s signal=%s RSI=%.2f %%B=%.3f reason=%s",
+        "PRICE=%.8f SIGNAL=%s RSI=%.2f %%B=%.3f REASON=%s",
         current_price,
         signal.action,
         signal.rsi_value,
@@ -721,6 +815,7 @@ def run():
             logging.INFO,
         ),
         format=(
+
             "%(asctime)s | "
             "%(levelname)s | "
             "%(message)s"
@@ -761,20 +856,16 @@ def run():
         LOOP_INTERVAL_SECONDS,
     )
 
-    client = MEXCClient()
-
-    logger.warning(
-        "MEXC Spot connection: OK"
-    )
-
-    logger.warning(
-        "MEXC market type: SPOT"
-    )
-
-    logger.warning(
-        "Current price: %s",
-        client.last_price(),
-    )
+    client = None
+    while client is None:
+        try:
+            client = MEXCClient()
+            logger.warning("MEXC Spot connection: OK")
+            logger.warning("MEXC market type: SPOT")
+            logger.warning("Current price: %s", client.last_price())
+        except Exception as exc:
+            logger.error("MEXC startup failed; retrying: %s", exc)
+            time.sleep(max(5, LOOP_INTERVAL_SECONDS))
 
     if LIVE_TRADING:
         logger.warning(
@@ -792,6 +883,13 @@ def run():
     strategy = create_strategy()
 
     state = load_state()
+
+    try:
+        state = reconcile_state_with_wallet(client, state)
+        state.pop("wallet_reconciliation_pending", None)
+    except Exception as exc:
+        logger.error("Wallet state reconciliation failed; retaining state: %s", exc)
+        state["wallet_reconciliation_pending"] = True
 
     logger.warning(
         "State file: %s",

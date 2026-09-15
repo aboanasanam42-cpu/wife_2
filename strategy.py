@@ -221,14 +221,9 @@ class SpotStrategy:
         available_slot_id: Optional[str],
     ) -> SignalResult:
         """
-        Trading plan translated to executable rules:
-        1) Trade only finalized candles.
-        2) Trade WITH the short-term trend: price above EMA20 and EMA20 rising.
-        3) Wait for a pullback into the lower Bollinger area.
-        4) Require an RSI trough-hook reversal, so the bot does not buy a falling knife.
-        5) Require the current candle to recover above the previous close.
-        6) Apply anti-clustering before opening another slot on the same symbol.
-        7) Size each slot from configuration; never increase order size because of a signal.
+        Buy only after a local low has formed and the following closed candle
+        confirms a rebound. This avoids buying the first candle of a decline
+        while remaining practical for a one-minute spot strategy.
         """
         if df.empty:
             return SignalResult("HOLD", 0.0, 50.0, 0.5, 0.0, "No market data.", symbol=symbol)
@@ -272,6 +267,7 @@ class SpotStrategy:
 
         prev = df.iloc[-2]
         prev2 = df.iloc[-3]
+        recent_lows = df["low"].iloc[-6:-3]
         rsi_prev = float(prev["rsi"])
         rsi_prev2 = float(prev2["rsi"])
         prev_pct_b = float(prev["bb_percent_b"])
@@ -280,15 +276,16 @@ class SpotStrategy:
         prev_close = float(prev["close"])
         bb_lower = float(last["bb_lower"])
 
-        trend_up = current_price > ema and ema >= prev_ema
-        rsi_trough_hook = rsi_prev < rsi_prev2 and rsi_current > rsi_prev
-        lower_zone = pct_b <= max(self.bollinger_b_entry, 0.20)
-        bounce = (prev_pct_b <= max(self.bollinger_b_entry, 0.20) and pct_b > prev_pct_b) or (
-            float(last.get("low", current_price)) <= bb_lower and current_price > prev_close
+        local_bottom = float(prev2["low"]) <= float(recent_lows.min())
+        rebound = current_price > prev_close and current_price > float(prev["high"])
+        rsi_reversal = rsi_current > rsi_prev and rsi_prev <= max(self.rsi_oversold + 8.0, 45.0)
+        pullback_context = (
+            prev_pct_b <= max(self.bollinger_b_entry + 0.15, 0.35)
+            or float(prev2["low"]) <= float(prev2.get("bb_lower", bb_lower))
         )
-        price_recovery = current_price > prev_close
+        confirmed_bottom = local_bottom and rebound and rsi_reversal and pullback_context
 
-        if trend_up and rsi_trough_hook and (lower_zone or bounce) and price_recovery:
+        if confirmed_bottom:
             can_enter, decouple_reason = self.evaluate_entry_decoupling(current_price, active_slots, symbol)
             if not can_enter:
                 return SignalResult("HOLD", current_price, rsi_current, pct_b, atr, decouple_reason, symbol=symbol)
@@ -297,9 +294,10 @@ class SpotStrategy:
             dynamic_sl = current_price - max(1.5 * atr, current_price * self.stop_loss_pct)
             dynamic_tp = current_price + max(2.0 * atr, current_price * self.take_profit_pct)
             reason = (
-                f"BUY confirmation {symbol}: trend UP (price {current_price:.6f} > EMA20 {ema:.6f}), "
-                f"RSI hook {rsi_prev2:.1f}->{rsi_prev:.1f}->{rsi_current:.1f}, "
-                f"%B={pct_b:.2f}, recovery={price_recovery}, {decouple_reason}"
+                f"Confirmed local bottom + rebound {symbol}: "
+                f"low={float(prev2['low']):.6f}, high break={rebound}, "
+                f"RSI {rsi_prev2:.1f}->{rsi_prev:.1f}->{rsi_current:.1f}, "
+                f"%B={pct_b:.2f}, EMA slope={float(last['ema_slope']):.6f}, {decouple_reason}"
             )
             return SignalResult("BUY", current_price, rsi_current, pct_b, atr, reason,
                                 symbol=symbol, suggested_sl=dynamic_sl, suggested_tp=dynamic_tp,
@@ -307,6 +305,8 @@ class SpotStrategy:
 
         return SignalResult(
             "HOLD", current_price, rsi_current, pct_b, atr,
-            f"No confirmed setup: trend_up={trend_up}, rsi_hook={rsi_trough_hook}, pullback={lower_zone or bounce}, recovery={price_recovery}",
+            f"No confirmed bottom: local_bottom={local_bottom}, rebound={rebound}, "
+            f"rsi_reversal={rsi_reversal}, pullback={pullback_context}, "
+            f"ema_slope={float(last['ema_slope']):.6f}",
             symbol=symbol,
         )
