@@ -133,8 +133,8 @@ def build_dataframe(raw_ohlcv):
     df = df.dropna()
 
     if len(df) > 1:
-        # The final candle may still be forming.
-        # Strategy must only use closed candles.
+        # The last candle can still be forming.
+        # The strategy must use closed candles only.
         df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
@@ -236,7 +236,12 @@ def update_trailing_position(position, current_price):
     entry = float(position["entry_price"])
 
     highest = max(
-        float(position.get("highest_price", entry)),
+        float(
+            position.get(
+                "highest_price",
+                entry,
+            )
+        ),
         current_price,
     )
 
@@ -262,8 +267,10 @@ def update_trailing_position(position, current_price):
         current_stop = float(
             position.get(
                 "stop_loss",
-                entry * (
-                    1.0 - STOP_LOSS_PCT / 100.0
+                entry
+                * (
+                    1.0
+                    - STOP_LOSS_PCT / 100.0
                 ),
             )
         )
@@ -287,8 +294,10 @@ def should_exit_position(
     stop = float(
         position.get(
             "stop_loss",
-            entry * (
-                1.0 - STOP_LOSS_PCT / 100.0
+            entry
+            * (
+                1.0
+                - STOP_LOSS_PCT / 100.0
             ),
         )
     )
@@ -296,7 +305,8 @@ def should_exit_position(
     take_profit = float(
         position.get(
             "take_profit",
-            entry * (
+            entry
+            * (
                 1.0
                 + 3.0 / 100.0
             ),
@@ -430,6 +440,7 @@ def execute_buy(
     }
 
     state["positions"].append(position)
+
     state["last_buy_time"] = time.time()
 
     save_state(state)
@@ -503,7 +514,11 @@ def execute_sell(
     )
 
 
-def run_cycle(client, strategy, state):
+def run_cycle(
+    client,
+    strategy,
+    state,
+):
     raw = client.ohlcv(
         timeframe=TIMEFRAME,
         limit=100,
@@ -511,7 +526,49 @@ def run_cycle(client, strategy, state):
 
     df = build_dataframe(raw)
 
-    if len(df) < max(30, RSI_PERIOD + 5):
+    # ---------------------------------------------------------
+    # IMPORTANT FIX:
+    # Do not call evaluate_entry_signal() before calculating
+    # RSI, Bollinger Bands, EMA and ATR.
+    # ---------------------------------------------------------
+
+    if df.empty:
+        logger.info(
+            "No closed candle data available."
+        )
+        return
+
+    # Calculate all technical indicators required
+    # by strategy.evaluate_entry_signal().
+    df = strategy.calculate_indicators(df)
+
+    # Verify the indicators required by the strategy exist.
+    required_columns = [
+        "rsi",
+        "bb_percent_b",
+        "atr",
+        "ema",
+        "ema_slope",
+        "bb_upper",
+        "bb_lower",
+    ]
+
+    missing_columns = [
+        column
+        for column in required_columns
+        if column not in df.columns
+    ]
+
+    if missing_columns:
+        raise RuntimeError(
+            "Strategy indicators are missing: "
+            + ", ".join(missing_columns)
+        )
+
+    if len(df) < max(
+        30,
+        RSI_PERIOD + 5,
+    ):
         logger.info(
             "Waiting for enough closed candles: %s",
             len(df),
@@ -531,7 +588,10 @@ def run_cycle(client, strategy, state):
 
     positions = active_positions(state)
 
-    # Update stops and process exits first.
+    # ---------------------------------------------------------
+    # UPDATE POSITIONS AND PROCESS EXITS FIRST
+    # ---------------------------------------------------------
+
     for position in positions:
         if position.get("symbol") != SYMBOL:
             continue
@@ -564,12 +624,20 @@ def run_cycle(client, strategy, state):
 
     positions = active_positions(state)
 
+    # ---------------------------------------------------------
+    # DETERMINE AVAILABLE SLOT
+    # ---------------------------------------------------------
+
     available_slot_id = None
 
     if len(positions) < MAX_POSITIONS:
         available_slot_id = next_slot_id(
             state
         )
+
+    # ---------------------------------------------------------
+    # GENERATE ENTRY SIGNAL
+    # ---------------------------------------------------------
 
     signal = strategy.evaluate_entry_signal(
         SYMBOL,
@@ -592,18 +660,39 @@ def run_cycle(client, strategy, state):
         return
 
     if available_slot_id is None:
-        return
-
-    cooldown = time.time() - float(
-        state.get("last_buy_time", 0.0)
-    )
-
-    if cooldown < 30:
         logger.info(
-            "Buy cooldown active: %.1fs remaining",
-            30 - cooldown,
+            "No available trading slot."
         )
         return
+
+    # ---------------------------------------------------------
+    # BUY COOLDOWN
+    # ---------------------------------------------------------
+
+    cooldown = time.time() - float(
+        state.get(
+            "last_buy_time",
+            0.0,
+        )
+    )
+
+    buy_cooldown_seconds = 30
+
+    if cooldown < buy_cooldown_seconds:
+        remaining = (
+            buy_cooldown_seconds
+            - cooldown
+        )
+
+        logger.info(
+            "Buy cooldown active: %.1fs remaining",
+            remaining,
+        )
+        return
+
+    # ---------------------------------------------------------
+    # EXECUTE BUY OR DRY RUN
+    # ---------------------------------------------------------
 
     if LIVE_TRADING:
         execute_buy(
@@ -614,8 +703,7 @@ def run_cycle(client, strategy, state):
     else:
         logger.warning(
             "DRY RUN BUY signal. "
-            "Set LIVE_TRADING=true only after "
-            "verifying API permissions and balance."
+            "No real order was submitted."
         )
 
 
@@ -637,9 +725,11 @@ def run():
     )
 
     logger.warning("=" * 70)
+
     logger.warning(
-        "wife_2 - MEXC SPOT REAL TRADING WORKER"
+        "wife_2 - MEXC SPOT TRADING WORKER"
     )
+
     logger.warning("=" * 70)
 
     logger.warning(
@@ -663,10 +753,19 @@ def run():
         MAX_POSITIONS,
     )
 
+    logger.warning(
+        "CHECK_INTERVAL=%ss",
+        LOOP_INTERVAL_SECONDS,
+    )
+
     client = MEXCClient()
 
     logger.warning(
         "MEXC Spot connection: OK"
+    )
+
+    logger.warning(
+        "MEXC market type: SPOT"
     )
 
     logger.warning(
@@ -678,6 +777,7 @@ def run():
         logger.warning(
             "!!! REAL TRADING IS ENABLED !!!"
         )
+
         logger.warning(
             "The worker can place real BUY/SELL orders."
         )
@@ -687,7 +787,18 @@ def run():
         )
 
     strategy = create_strategy()
+
     state = load_state()
+
+    logger.warning(
+        "State file: %s",
+        STATE_FILE,
+    )
+
+    logger.warning(
+        "Active positions loaded: %s",
+        len(active_positions(state)),
+    )
 
     while True:
         started = time.time()
@@ -706,19 +817,21 @@ def run():
             break
 
         except Exception as exc:
-            logger.exception(
+            logger.error(
                 "Worker cycle failed: %s",
                 exc,
             )
 
+            traceback.print_exc()
+
         elapsed = time.time() - started
 
-        sleep_for = max(
-            1.0,
+        sleep_seconds = max(
+            1,
             LOOP_INTERVAL_SECONDS - elapsed,
         )
 
-        time.sleep(sleep_for)
+        time.sleep(sleep_seconds)
 
 
 if __name__ == "__main__":
