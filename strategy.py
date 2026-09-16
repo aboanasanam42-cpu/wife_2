@@ -1,4 +1,3 @@
-```python
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -1123,4 +1122,3 @@ class SpotStrategy:
             positions=positions,
             available_slot_id=available_slot_id,
         )
-```
