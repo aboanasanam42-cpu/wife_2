@@ -21,7 +21,7 @@ class TradeSignal:
 
 class SpotStrategy:
     """
-    Fast BTC/USDT Spot strategy.
+    Fast MX/USDT Spot strategy.
 
     Entry:
     - Detect a recent small dip.
