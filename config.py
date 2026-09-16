@@ -62,7 +62,7 @@ TRAILING_STOP_OFFSET_PCT = env_float(
 
 MIN_SLOT_PRICE_DIFF_PCT = env_float(
     "MIN_SLOT_PRICE_DIFF_PCT",
-    0.60,
+    0.0003,
 )
 
 BUY_COOLDOWN_SEC = env_int("BUY_COOLDOWN_SEC", 30)
