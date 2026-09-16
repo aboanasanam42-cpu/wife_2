@@ -3,82 +3,221 @@ import os
 
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
+
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    return value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
 
 
 def env_float(name: str, default: float = 0.0) -> float:
     value = os.getenv(name)
+
     if value is None or not value.strip():
         return default
-    return float(value)
+
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid float value for {name}: {value!r}"
+        ) from exc
 
 
 def env_int(name: str, default: int = 0) -> int:
     value = os.getenv(name)
+
     if value is None or not value.strip():
         return default
-    return int(value)
+
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid integer value for {name}: {value!r}"
+        ) from exc
 
 
-MEXC_API_KEY = os.getenv("MEXC_API_KEY", "").strip()
-MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "").strip()
+# ============================================================
+# MEXC
+# ============================================================
 
-SYMBOL = "MX/USDT"
-TIMEFRAME = "1m"
+MEXC_API_KEY = os.getenv(
+    "MEXC_API_KEY",
+    "",
+).strip()
 
-TRADE_AMOUNT_USDT = env_float("TRADE_AMOUNT_USDT", 2.5)
+MEXC_API_SECRET = os.getenv(
+    "MEXC_API_SECRET",
+    "",
+).strip()
 
-# Railway name first, old name as fallback.
-LOOP_INTERVAL_SECONDS = env_int(
-    "CHECK_INTERVAL_SECONDS",
-    env_int("LOOP_INTERVAL_SECONDS", 10),
+
+# ============================================================
+# MARKET
+# ============================================================
+
+# IMPORTANT:
+# This bot is Spot only.
+SYMBOL = os.getenv(
+    "SYMBOL",
+    "MX/USDT",
+).strip().upper()
+
+TIMEFRAME = os.getenv(
+    "TIMEFRAME",
+    "1m",
+).strip()
+
+
+# ============================================================
+# TRADING
+# ============================================================
+
+TRADE_AMOUNT_USDT = env_float(
+    "TRADE_AMOUNT_USDT",
+    2.5,
 )
 
-MAX_POSITIONS = env_int(
-    "MAX_OPEN_TRADES",
-    env_int("MAX_POSITIONS", 1),
+MAX_POSITIONS = max(
+    1,
+    env_int(
+        "MAX_POSITIONS",
+        1,
+    ),
 )
 
-CASH_RESERVE_USDT = env_float("CASH_RESERVE_USDT", 0.0)
-
-RSI_PERIOD = env_int("RSI_PERIOD", 14)
-
-STOP_LOSS_PCT = env_float(
-    "STOP_LOSS_PCT",
-    env_float("STOP_LOSS_PERCENT", 0.40),
+CASH_RESERVE_USDT = max(
+    0.0,
+    env_float(
+        "CASH_RESERVE_USDT",
+        0.0,
+    ),
 )
 
-TRAILING_STOP_ACTIVATION_PCT = env_float(
-    "TRAILING_STOP_ACTIVATION_PCT",
-    0.15,
+
+# ============================================================
+# LIVE MODE
+# ============================================================
+
+# FALSE = no real orders.
+# TRUE = real MEXC Spot orders.
+#
+# Set this ONLY in Railway Variables after verifying
+# the API key has Spot Trading permission and NO withdrawal
+# permission.
+LIVE_TRADING = env_bool(
+    "LIVE_TRADING",
+    False,
 )
 
-TRAILING_STOP_OFFSET_PCT = env_float(
-    "TRAILING_STOP_OFFSET_PCT",
-    0.20,
+
+# ============================================================
+# LOOP
+# ============================================================
+
+LOOP_INTERVAL_SECONDS = max(
+    2,
+    env_int(
+        "LOOP_INTERVAL_SECONDS",
+        env_int(
+            "CHECK_INTERVAL_SECONDS",
+            10,
+        ),
+    ),
 )
 
-MIN_SLOT_PRICE_DIFF_PCT = env_float(
-    "MIN_SLOT_PRICE_DIFF_PCT",
-    0.0003,
+BUY_COOLDOWN_SEC = max(
+    0,
+    env_int(
+        "BUY_COOLDOWN_SEC",
+        30,
+    ),
 )
 
-BUY_COOLDOWN_SEC = env_int("BUY_COOLDOWN_SEC", 30)
+
+# ============================================================
+# STRATEGY
+# ============================================================
+
+RSI_PERIOD = max(
+    2,
+    env_int(
+        "RSI_PERIOD",
+        14,
+    ),
+)
+
+STOP_LOSS_PCT = max(
+    0.0,
+    env_float(
+        "STOP_LOSS_PCT",
+        0.40,
+    ),
+)
+
+TRAILING_STOP_ACTIVATION_PCT = max(
+    0.0,
+    env_float(
+        "TRAILING_STOP_ACTIVATION_PCT",
+        0.15,
+    ),
+)
+
+TRAILING_STOP_OFFSET_PCT = max(
+    0.0,
+    env_float(
+        "TRAILING_STOP_OFFSET_PCT",
+        0.20,
+    ),
+)
 
 TRAILING_CONFIRMATION_CANDLES = max(
     1,
-    env_int("TRAILING_CONFIRMATION_CANDLES", 1),
+    env_int(
+        "TRAILING_CONFIRMATION_CANDLES",
+        1,
+    ),
 )
 
-MAX_HOLD_TIME_SEC = env_int("MAX_HOLD_TIME_SEC", 1200)
+MAX_HOLD_TIME_SEC = max(
+    0,
+    env_int(
+        "MAX_HOLD_TIME_SEC",
+        1200,
+    ),
+)
 
-LIVE_TRADING = env_bool("LIVE_TRADING", False)
+MIN_SLOT_PRICE_DIFF_PCT = max(
+    0.0,
+    env_float(
+        "MIN_SLOT_PRICE_DIFF_PCT",
+        0.0003,
+    ),
+)
+
+
+# ============================================================
+# STATE
+# ============================================================
 
 STATE_FILE = os.getenv(
     "STATE_FILE",
     "/app/data/positions.json",
 ).strip()
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+LOG_LEVEL = os.getenv(
+    "LOG_LEVEL",
+    "INFO",
+).strip().upper()
