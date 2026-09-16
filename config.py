@@ -28,7 +28,7 @@ MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "").strip()
 SYMBOL = "MX/USDT"
 TIMEFRAME = "1m"
 
-TRADE_AMOUNT_USDT = env_float("TRADE_AMOUNT_USDT", 5.5)
+TRADE_AMOUNT_USDT = env_float("TRADE_AMOUNT_USDT", 2.5)
 
 # Railway name first, old name as fallback.
 LOOP_INTERVAL_SECONDS = env_int(
