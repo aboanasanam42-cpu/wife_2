@@ -618,6 +618,44 @@ def should_exit_position(
         position["entry_price"]
     )
 
+    # -----------------------------------------------------
+    # TAKE PROFIT
+    # -----------------------------------------------------
+    # The bot must sell as soon as the configured profit
+    # target is reached.
+    #
+    # This check intentionally happens BEFORE trailing logic.
+    # -----------------------------------------------------
+
+    take_profit = float(
+        position.get(
+            "take_profit",
+            0.0,
+        )
+    )
+
+    if (
+        take_profit > 0
+        and current_price >= take_profit
+    ):
+        profit_pct = (
+            (current_price - entry)
+            / entry
+            * 100.0
+            if entry > 0
+            else 0.0
+        )
+
+        return (
+            True,
+            "take-profit reached "
+            f"({profit_pct:.3f}% from entry)",
+        )
+
+    # -----------------------------------------------------
+    # STOP / TRAILING STOP
+    # -----------------------------------------------------
+
     stop = float(
         position.get(
             "stop_loss",
@@ -665,6 +703,10 @@ def should_exit_position(
             True,
             "stop-loss/trailing-stop",
         )
+
+    # -----------------------------------------------------
+    # MAXIMUM HOLD TIME
+    # -----------------------------------------------------
 
     opened_at = float(
         position.get(
@@ -779,8 +821,12 @@ def execute_buy(
 
     entry = average_price
 
+    # -----------------------------------------------------
+    # STOP LOSS
+    # -----------------------------------------------------
+
     stop = (
-        signal.suggested_sl
+        float(signal.suggested_sl)
         if signal.suggested_sl is not None
         else entry
         * (
@@ -789,14 +835,31 @@ def execute_buy(
         )
     )
 
-    take_profit = (
-        signal.suggested_tp
-        if signal.suggested_tp is not None
-        else entry
+    # -----------------------------------------------------
+    # TAKE PROFIT
+    # -----------------------------------------------------
+    # IMPORTANT:
+    # Calculate the minimum target from the REAL filled
+    # entry price rather than relying only on the signal price.
+    # -----------------------------------------------------
+
+    activation_target = (
+        entry
         * (
             1.0
-            + 3.0 / 100.0
+            + TRAILING_STOP_ACTIVATION_PCT / 100.0
         )
+    )
+
+    signal_target = (
+        float(signal.suggested_tp)
+        if signal.suggested_tp is not None
+        else activation_target
+    )
+
+    take_profit = max(
+        activation_target,
+        signal_target,
     )
 
     position = {
@@ -832,6 +895,8 @@ def execute_buy(
         "slot=%s "
         "amount=%s "
         "entry=%s "
+        "take_profit=%s "
+        "stop_loss=%s "
         "order_id=%s "
         "status=%s",
         SYMBOL,
@@ -839,6 +904,8 @@ def execute_buy(
         slot_id,
         filled_amount,
         entry,
+        take_profit,
+        stop,
         order.get("id"),
         order.get(
             "status",
@@ -872,16 +939,36 @@ def execute_sell(
         position["amount"]
     )
 
+    if amount <= 0:
+        logger.error(
+            "SELL BLOCKED: invalid amount=%s "
+            "symbol=%s "
+            "slot=%s",
+            amount,
+            SYMBOL,
+            position.get("slot_id"),
+        )
+        return
+
     logger.warning(
         "SIGNAL=SELL "
         "SYMBOL=%s "
         "BASE=%s "
         "ENTRY_PRICE=%.8f "
+        "CURRENT_PRICE=%.8f "
+        "TAKE_PROFIT=%.8f "
         "SELL_AMOUNT=%.10f "
         "reason=%s",
         SYMBOL,
         BASE_CURRENCY,
         float(position["entry_price"]),
+        current_price,
+        float(
+            position.get(
+                "take_profit",
+                0.0,
+            )
+        ),
         amount,
         reason,
     )
@@ -1086,11 +1173,32 @@ def run_cycle(
             else 0.0
         )
 
+        take_profit = float(
+            position.get(
+                "take_profit",
+                0.0,
+            )
+        )
+
+        entry_price = float(
+            position["entry_price"]
+        )
+
+        profit_pct = (
+            (current_price - entry_price)
+            / entry_price
+            * 100.0
+            if entry_price > 0
+            else 0.0
+        )
+
         logger.info(
             "PRICE=%.8f "
             "SYMBOL=%s "
             "STATE=%s "
             "ENTRY_PRICE=%.8f "
+            "TAKE_PROFIT=%.8f "
+            "PROFIT=%.3f%% "
             "HIGHEST_PRICE=%.8f "
             "DRAWDOWN_FROM_HIGH=%.3f%%",
             current_price,
@@ -1102,9 +1210,9 @@ def run_cycle(
                 )
                 else "TRACKING"
             ),
-            float(
-                position["entry_price"]
-            ),
+            entry_price,
+            take_profit,
+            profit_pct,
             highest_price,
             drawdown_pct,
         )
