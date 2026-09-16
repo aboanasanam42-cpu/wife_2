@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ccxt
 
 from config import (
@@ -8,12 +10,29 @@ from config import (
 
 
 class MEXCClient:
-    def __init__(self):
+    """
+    Real MEXC Spot client.
+
+    The client:
+    - uses MEXC Spot only
+    - loads and validates the requested market
+    - validates balances
+    - validates order limits
+    - confirms submitted orders
+    - never handles withdrawals
+    """
+
+    def __init__(self) -> None:
+
         if not MEXC_API_KEY:
-            raise RuntimeError("MEXC_API_KEY is missing")
+            raise RuntimeError(
+                "MEXC_API_KEY is missing"
+            )
 
         if not MEXC_API_SECRET:
-            raise RuntimeError("MEXC_API_SECRET is missing")
+            raise RuntimeError(
+                "MEXC_API_SECRET is missing"
+            )
 
         self.exchange = ccxt.mexc(
             {
@@ -30,7 +49,7 @@ class MEXCClient:
 
         if SYMBOL not in self.exchange.markets:
             raise RuntimeError(
-                f"{SYMBOL} is not available on MEXC Spot"
+                f"{SYMBOL} is not available on MEXC"
             )
 
         market = self.exchange.market(SYMBOL)
@@ -40,50 +59,107 @@ class MEXCClient:
                 f"{SYMBOL} is not a Spot market"
             )
 
-        if not self.exchange.has.get("createMarketOrder"):
+        if market.get("active") is False:
             raise RuntimeError(
-                "MEXC/CCXT does not report market orders as supported"
+                f"{SYMBOL} market is inactive on MEXC"
             )
 
+        if not self.exchange.has.get(
+            "createMarketOrder"
+        ):
+            raise RuntimeError(
+                "MEXC/CCXT does not report market orders "
+                "as supported"
+            )
+
+    # ========================================================
+    # MARKET
+    # ========================================================
+
+    def market(self):
+        return self.exchange.market(
+            SYMBOL
+        )
+
     def ticker(self):
-        return self.exchange.fetch_ticker(SYMBOL)
+        return self.exchange.fetch_ticker(
+            SYMBOL
+        )
 
     def last_price(self) -> float:
+
         ticker = self.ticker()
+
         price = ticker.get("last")
 
         if price is None:
-            raise RuntimeError("MEXC returned no last price")
+            price = ticker.get("close")
 
-        return float(price)
+        if price is None:
+            raise RuntimeError(
+                "MEXC returned no usable market price"
+            )
 
-    def ohlcv(self, timeframe="1m", limit=100):
+        price = float(price)
+
+        if price <= 0:
+            raise RuntimeError(
+                f"Invalid MEXC price: {price}"
+            )
+
+        return price
+
+    def ohlcv(
+        self,
+        timeframe: str = "1m",
+        limit: int = 100,
+    ):
         return self.exchange.fetch_ohlcv(
             SYMBOL,
             timeframe=timeframe,
             limit=limit,
         )
 
+    # ========================================================
+    # BALANCE
+    # ========================================================
+
     def balance(self):
         return self.exchange.fetch_balance()
 
-    def free_balance(self, currency: str) -> float:
+    def free_balance(
+        self,
+        currency: str,
+    ) -> float:
+
         balance = self.balance()
 
-        free = balance.get("free", {}).get(currency)
+        free = (
+            balance
+            .get("free", {})
+            .get(currency)
+        )
 
         if free is None:
             free = (
-                balance.get(currency, {})
+                balance
+                .get(currency, {})
                 .get("free", 0.0)
             )
 
-        return float(free or 0.0)
+        return float(
+            free or 0.0
+        )
 
-    def market(self):
-        return self.exchange.market(SYMBOL)
+    # ========================================================
+    # PRECISION
+    # ========================================================
 
-    def normalize_amount(self, amount: float) -> float:
+    def normalize_amount(
+        self,
+        amount: float,
+    ) -> float:
+
         return float(
             self.exchange.amount_to_precision(
                 SYMBOL,
@@ -91,7 +167,11 @@ class MEXCClient:
             )
         )
 
-    def normalize_price(self, price: float) -> float:
+    def normalize_price(
+        self,
+        price: float,
+    ) -> float:
+
         return float(
             self.exchange.price_to_precision(
                 SYMBOL,
@@ -99,7 +179,74 @@ class MEXCClient:
             )
         )
 
-    def create_market_buy(self, cost_usdt: float):
+    # ========================================================
+    # LIMIT HELPERS
+    # ========================================================
+
+    def _limits(self):
+        return (
+            self.market()
+            .get("limits", {})
+            or {}
+        )
+
+    def minimum_amount(self) -> float:
+        value = (
+            self._limits()
+            .get("amount", {})
+            .get("min")
+        )
+
+        return float(
+            value or 0.0
+        )
+
+    def maximum_amount(self) -> float:
+        value = (
+            self._limits()
+            .get("amount", {})
+            .get("max")
+        )
+
+        return float(
+            value or 0.0
+        )
+
+    def minimum_cost(self) -> float:
+        value = (
+            self._limits()
+            .get("cost", {})
+            .get("min")
+        )
+
+        return float(
+            value or 0.0
+        )
+
+    def maximum_cost(self) -> float:
+        value = (
+            self._limits()
+            .get("cost", {})
+            .get("max")
+        )
+
+        return float(
+            value or 0.0
+        )
+
+    # ========================================================
+    # REAL MARKET BUY
+    # ========================================================
+
+    def create_market_buy(
+        self,
+        cost_usdt: float,
+    ):
+
+        cost_usdt = float(
+            cost_usdt
+        )
+
         if cost_usdt <= 0:
             raise ValueError(
                 "Buy cost must be greater than zero"
@@ -107,31 +254,16 @@ class MEXCClient:
 
         market = self.market()
 
-        limits = market.get("limits", {})
-        cost_limits = limits.get("cost", {}) or {}
-
-        min_cost = cost_limits.get("min")
-        max_cost = cost_limits.get("max")
-
-        if min_cost is not None and cost_usdt < float(min_cost):
-            raise ValueError(
-                f"Buy cost {cost_usdt} USDT is below "
-                f"MEXC minimum cost {min_cost} USDT"
-            )
-
-        if max_cost is not None and cost_usdt > float(max_cost):
-            raise ValueError(
-                f"Buy cost {cost_usdt} USDT exceeds "
-                f"MEXC maximum cost {max_cost} USDT"
-            )
-
         quote_currency = market["quote"]
 
-        available = self.free_balance(quote_currency)
+        available = self.free_balance(
+            quote_currency
+        )
 
         if available <= 0:
             raise RuntimeError(
-                f"No available {quote_currency} balance"
+                f"No available "
+                f"{quote_currency} balance"
             )
 
         if cost_usdt > available:
@@ -141,37 +273,76 @@ class MEXCClient:
                 f"available={available:.8f}"
             )
 
+        min_cost = self.minimum_cost()
+        max_cost = self.maximum_cost()
+
+        if (
+            min_cost > 0
+            and cost_usdt < min_cost
+        ):
+            raise ValueError(
+                f"Buy cost {cost_usdt:.8f} "
+                f"is below MEXC minimum "
+                f"cost {min_cost:.8f}"
+            )
+
+        if (
+            max_cost > 0
+            and cost_usdt > max_cost
+        ):
+            raise ValueError(
+                f"Buy cost {cost_usdt:.8f} "
+                f"exceeds MEXC maximum "
+                f"cost {max_cost:.8f}"
+            )
+
         price = self.last_price()
-        estimated_amount = cost_usdt / price
-        amount_limits = limits.get("amount", {}) or {}
-        min_amount = amount_limits.get("min")
-        max_amount = amount_limits.get("max")
 
-        if min_amount is not None and estimated_amount < float(min_amount):
+        estimated_amount = (
+            cost_usdt / price
+        )
+
+        min_amount = self.minimum_amount()
+        max_amount = self.maximum_amount()
+
+        if (
+            min_amount > 0
+            and estimated_amount < min_amount
+        ):
             raise ValueError(
-                f"Estimated buy amount {estimated_amount} is below "
-                f"MEXC minimum amount {min_amount}"
-            )
-        if max_amount is not None and estimated_amount > float(max_amount):
-            raise ValueError(
-                f"Estimated buy amount {estimated_amount} exceeds "
-                f"MEXC maximum amount {max_amount}"
+                f"Estimated amount "
+                f"{estimated_amount:.12f} "
+                f"is below MEXC minimum "
+                f"amount {min_amount:.12f}"
             )
 
-        # MEXC supports market-buy-with-cost through CCXT.
+        if (
+            max_amount > 0
+            and estimated_amount > max_amount
+        ):
+            raise ValueError(
+                f"Estimated amount "
+                f"{estimated_amount:.12f} "
+                f"exceeds MEXC maximum "
+                f"amount {max_amount:.12f}"
+            )
+
+        # Preferred CCXT method when supported.
         if self.exchange.has.get(
             "createMarketBuyOrderWithCost"
         ):
-            return self.exchange.create_market_buy_order_with_cost(
-                SYMBOL,
-                cost_usdt,
+            return (
+                self.exchange
+                .create_market_buy_order_with_cost(
+                    SYMBOL,
+                    cost_usdt,
+                )
             )
 
-        # Safe fallback:
-        # convert the USDT budget into base quantity.
-        amount = cost_usdt / price
-
-        amount = self.normalize_amount(amount)
+        # Fallback to quantity-based market order.
+        amount = self.normalize_amount(
+            estimated_amount
+        )
 
         if amount <= 0:
             raise RuntimeError(
@@ -185,83 +356,184 @@ class MEXCClient:
             amount,
         )
 
-    def create_market_sell(self, amount: float):
+    # ========================================================
+    # REAL MARKET SELL
+    # ========================================================
+
+    def create_market_sell(
+        self,
+        amount: float,
+    ):
+
+        amount = float(
+            amount
+        )
+
         if amount <= 0:
             raise ValueError(
                 "Sell amount must be greater than zero"
             )
 
-        base_currency = self.market()["base"]
+        market = self.market()
 
-        available = self.free_balance(base_currency)
+        base_currency = market["base"]
+
+        available = self.free_balance(
+            base_currency
+        )
 
         if available <= 0:
             raise RuntimeError(
-                f"No available {base_currency} balance"
+                f"No available "
+                f"{base_currency} balance"
             )
 
-        amount = min(float(amount), available)
+        amount = min(
+            amount,
+            available,
+        )
 
-        amount = self.normalize_amount(amount)
-
-        amount_limits = self.market().get("limits", {}).get("amount", {}) or {}
-        min_amount = amount_limits.get("min")
-        max_amount = amount_limits.get("max")
-
-        if min_amount is not None and amount < float(min_amount):
-            raise ValueError(
-                f"Sell amount {amount} is below MEXC minimum amount {min_amount}"
-            )
-        if max_amount is not None and amount > float(max_amount):
-            amount = self.normalize_amount(float(max_amount))
+        amount = self.normalize_amount(
+            amount
+        )
 
         if amount <= 0:
             raise RuntimeError(
-                "Calculated market-sell amount is zero"
+                "Normalized sell amount is zero"
             )
 
-        min_cost = (self.market().get("limits", {}).get("cost", {}) or {}).get("min")
-        if min_cost is not None and amount * self.last_price() < float(min_cost):
+        min_amount = self.minimum_amount()
+
+        if (
+            min_amount > 0
+            and amount < min_amount
+        ):
             raise ValueError(
-                f"Sell value {amount * self.last_price():.8f} is below "
-                f"MEXC minimum cost {min_cost}"
+                f"Sell amount "
+                f"{amount:.12f} is below "
+                f"MEXC minimum amount "
+                f"{min_amount:.12f}"
             )
 
-        return self.exchange.create_market_sell_order(
-            SYMBOL,
-            amount,
+        max_amount = self.maximum_amount()
+
+        if (
+            max_amount > 0
+            and amount > max_amount
+        ):
+            amount = self.normalize_amount(
+                max_amount
+            )
+
+        price = self.last_price()
+
+        min_cost = self.minimum_cost()
+
+        sell_value = (
+            amount * price
         )
 
-    def fetch_order(self, order_id: str):
+        if (
+            min_cost > 0
+            and sell_value < min_cost
+        ):
+            raise ValueError(
+                f"Sell value "
+                f"{sell_value:.8f} USDT is below "
+                f"MEXC minimum cost "
+                f"{min_cost:.8f} USDT"
+            )
+
+        return (
+            self.exchange
+            .create_market_sell_order(
+                SYMBOL,
+                amount,
+            )
+        )
+
+    # ========================================================
+    # ORDER CONFIRMATION
+    # ========================================================
+
+    def fetch_order(
+        self,
+        order_id: str,
+    ):
+
         return self.exchange.fetch_order(
             order_id,
             SYMBOL,
         )
 
-    def confirm_order(self, order: dict):
-        order_id = order.get("id")
+    def confirm_order(
+        self,
+        order: dict,
+    ):
+
+        order_id = order.get(
+            "id"
+        )
+
         if order_id:
+
             try:
-                confirmed = self.fetch_order(order_id)
+
+                confirmed = (
+                    self.fetch_order(
+                        order_id
+                    )
+                )
+
                 if confirmed:
                     order = confirmed
+
             except Exception as exc:
+
                 raise RuntimeError(
-                    f"Could not confirm MEXC order {order_id}: {exc}"
+                    "Could not confirm "
+                    f"MEXC order "
+                    f"{order_id}: {exc}"
                 ) from exc
 
-        status = str(order.get("status") or "").lower()
-        filled = float(order.get("filled") or 0.0)
-        if status in {"canceled", "cancelled", "rejected", "expired"}:
+        status = str(
+            order.get("status")
+            or ""
+        ).lower()
+
+        filled = float(
+            order.get("filled")
+            or 0.0
+        )
+
+        if status in {
+            "canceled",
+            "cancelled",
+            "rejected",
+            "expired",
+        }:
+
             raise RuntimeError(
-                f"MEXC order {order_id or 'unknown'} was not filled: {status}"
+                f"MEXC order "
+                f"{order_id or 'unknown'} "
+                f"was not filled: "
+                f"{status}"
             )
-        if status and status not in {"closed", "filled"} and filled <= 0:
+
+        if (
+            status
+            and status not in {
+                "closed",
+                "filled",
+            }
+            and filled <= 0
+        ):
+
             raise RuntimeError(
-                f"MEXC order {order_id or 'unknown'} is not complete: {status}"
+                f"MEXC order "
+                f"{order_id or 'unknown'} "
+                f"is not complete: "
+                f"{status}"
             )
-        if filled <= 0 and not order.get("amount"):
-            raise RuntimeError(
-                f"MEXC order {order_id or 'unknown'} has no filled quantity"
-            )
+
         return order
