@@ -1,3 +1,4 @@
+```python
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,20 +22,27 @@ class TradeSignal:
 
 class SpotStrategy:
     """
-    Fast MX/USDT Spot strategy.
+    Fast / low-conservatism MX/USDT Spot strategy.
+
+    الهدف:
+    - التقاط الارتداد بسرعة بعد هبوط صغير.
+    - عدم انتظار تشكل اتجاه صاعد قوي بالكامل.
+    - استخدام RSI و EMA و Bollinger كعوامل تأكيد مرنة.
+    - السماح بالدخول حتى لو لم يصبح EMA موجبًا بعد.
+    - تجنب الدخول فقط عندما تكون الشمعة ممتدة بشكل مبالغ فيه.
 
     Entry:
-    - Detect a recent small dip.
-    - Detect the first meaningful recovery.
-    - RSI must be stable or turning upward.
-    - EMA slope is used as a confirmation, not as a requirement
-      for a large trend.
-    - Avoid chasing an already extended candle.
+    - Recent dip OR short-term weakness.
+    - Current candle showing recovery.
+    - RSI stable / recovering.
+    - Price recovering around or above EMA.
+    - Bollinger context remains acceptable.
+    - No active position for the same symbol.
+    - Available slot required.
 
     Exit:
     - Exit management is handled by main.py.
-    - main.py tracks highest_price and trailing stop.
-    - main.py handles stop loss and maximum holding time.
+    - main.py manages trailing stop, stop loss and max holding time.
     """
 
     def __init__(
@@ -43,10 +51,10 @@ class SpotStrategy:
         stop_loss_pct: float = 0.004,
         trailing_stop_activation_pct: float = 0.0015,
         trailing_stop_offset_pct: float = 0.0005,
-        min_slot_price_diff_pct: float = 0.0005,
-        rsi_oversold: float = 35.0,
-        rsi_overbought: float = 70.0,
-        bollinger_b_entry: float = 0.45,
+        min_slot_price_diff_pct: float = 0.0003,
+        rsi_oversold: float = 38.0,
+        rsi_overbought: float = 75.0,
+        bollinger_b_entry: float = 0.60,
     ) -> None:
 
         self.rsi_period = max(
@@ -212,10 +220,6 @@ class SpotStrategy:
 
         # ============================================================
         # EMA
-        #
-        # main.py explicitly requires:
-        #   ema
-        #   ema_slope
         # ============================================================
 
         ema_period = 9
@@ -226,18 +230,12 @@ class SpotStrategy:
             min_periods=ema_period,
         ).mean()
 
-        # EMA slope as percentage change between consecutive EMA values.
         result["ema_slope"] = (
             result["ema"].pct_change()
         )
 
         # ============================================================
         # BOLLINGER BANDS
-        #
-        # main.py explicitly requires:
-        #   bb_percent_b
-        #
-        # Keep percent_b too for compatibility.
         # ============================================================
 
         bb_period = 20
@@ -284,7 +282,7 @@ class SpotStrategy:
             bb_percent_b
         )
 
-        # Backward-compatible alias.
+        # Backward compatibility.
         result["percent_b"] = (
             bb_percent_b
         )
@@ -363,9 +361,8 @@ class SpotStrategy:
                 errors="coerce",
             )
 
-        # Maintain compatibility with code
-        # expecting percent_b.
         if "percent_b" not in result.columns:
+
             result["percent_b"] = (
                 result["bb_percent_b"]
             )
@@ -406,6 +403,7 @@ class SpotStrategy:
             price = 0.0
 
             if "close" in df.columns:
+
                 price = self._safe_float(
                     df["close"].iloc[-1]
                 )
@@ -445,12 +443,12 @@ class SpotStrategy:
 
         rsi_prev = self._safe_float(
             prev["rsi"],
-            50.0,
+            rsi_current,
         )
 
         rsi_prev2 = self._safe_float(
             prev2["rsi"],
-            50.0,
+            rsi_prev,
         )
 
         percent_b = self._safe_float(
@@ -460,7 +458,7 @@ class SpotStrategy:
 
         percent_b_prev = self._safe_float(
             prev["bb_percent_b"],
-            0.5,
+            percent_b,
         )
 
         ema_current = self._safe_float(
@@ -482,40 +480,65 @@ class SpotStrategy:
         # PRICES
         # ============================================================
 
+        current_open = self._safe_float(
+            current["open"],
+            current_price,
+        )
+
+        current_high = self._safe_float(
+            current["high"],
+            current_price,
+        )
+
+        current_low = self._safe_float(
+            current["low"],
+            current_price,
+        )
+
         prev_close = self._safe_float(
-            prev["close"]
+            prev["close"],
+            current_price,
         )
 
         prev2_close = self._safe_float(
-            prev2["close"]
+            prev2["close"],
+            prev_close,
         )
 
         prev3_close = self._safe_float(
-            prev3["close"]
+            prev3["close"],
+            prev2_close,
         )
 
         prev_low = self._safe_float(
-            prev["low"]
+            prev["low"],
+            prev_close,
         )
 
         prev2_low = self._safe_float(
-            prev2["low"]
+            prev2["low"],
+            prev2_close,
         )
 
         prev3_low = self._safe_float(
-            prev3["low"]
+            prev3["low"],
+            prev3_close,
         )
 
         prev_high = self._safe_float(
-            prev["high"]
+            prev["high"],
+            prev_close,
         )
 
         prev2_high = self._safe_float(
-            prev2["high"]
+            prev2["high"],
+            prev2_close,
         )
 
         # ============================================================
         # 1. RECENT DIP
+        #
+        # أخف من النسخة السابقة.
         # ============================================================
 
         decline_1 = (
@@ -527,17 +550,18 @@ class SpotStrategy:
         )
 
         low_decline_1 = (
-            prev_low < prev2_low
+            prev_low <= prev2_low
         )
 
         low_decline_2 = (
-            prev2_low < prev3_low
+            prev2_low <= prev3_low
         )
 
         recent_reference = max(
             prev3_close,
             prev2_close,
             prev2_high,
+            prev_high,
         )
 
         dip_pct = 0.0
@@ -552,9 +576,9 @@ class SpotStrategy:
                 / recent_reference
             ) * 100.0
 
-        # Very small decline qualifies.
+        # دخول أسرع حتى مع حركة هبوط صغيرة.
         small_dip = (
-            dip_pct >= 0.01
+            dip_pct >= 0.005
         )
 
         dip_detected = (
@@ -570,20 +594,25 @@ class SpotStrategy:
         # ============================================================
 
         price_rebound = (
-            current_price > prev_close
+            current_price >= prev_close
+        )
+
+        current_green = (
+            current_price >= current_open
         )
 
         candle_recovery = (
             prev_close >= prev2_close
-            or prev_high > prev2_high
+            or prev_high >= prev2_high
         )
 
         break_previous_high = (
-            current_price > prev_high
+            current_price >= prev_high
         )
 
         rebound = (
             price_rebound
+            or current_green
             or candle_recovery
             or break_previous_high
         )
@@ -600,22 +629,25 @@ class SpotStrategy:
                 / prev_close
             ) * 100.0
 
+        # السماح بالارتداد الصغير جدًا.
         small_rebound_confirmed = (
-            rebound_pct >= 0.0
+            rebound_pct >= -0.03
         )
 
         # ============================================================
         # 3. RSI
         #
-        # No need to reach oversold.
+        # مرن:
+        # - لا يشترط oversold.
+        # - يكفي ألا يكون RSI في منطقة مبالغة شديدة.
         # ============================================================
 
         rsi_turning_up = (
-            rsi_current >= rsi_prev
+            rsi_current >= rsi_prev - 0.50
         )
 
         rsi_stabilizing = (
-            rsi_prev >= rsi_prev2
+            rsi_current >= rsi_prev2 - 1.00
         )
 
         rsi_recovery = (
@@ -628,19 +660,26 @@ class SpotStrategy:
             <= self.rsi_overbought
         )
 
+        # إذا كان RSI منخفضًا، نعطيه أفضلية كارتداد.
+        rsi_dip_bonus = (
+            rsi_current
+            <= self.rsi_oversold
+        )
+
         # ============================================================
         # 4. EMA
         #
-        # A positive slope is preferred, but an immediate reversal
-        # is allowed even if the EMA has not turned positive yet.
+        # EMA تأكيد وليس شرطًا إلزاميًا.
         # ============================================================
 
         ema_rising = (
-            ema_current >= ema_prev
+            ema_current
+            >= ema_prev * 0.9998
         )
 
         price_above_ema = (
-            current_price >= ema_current
+            current_price
+            >= ema_current * 0.999
         )
 
         ema_recovery = (
@@ -650,24 +689,40 @@ class SpotStrategy:
 
         # ============================================================
         # 5. BOLLINGER CONTEXT
+        #
+        # أوسع من السابق.
         # ============================================================
 
         lower_band_context = (
-            percent_b <= 0.60
+            percent_b
+            <= max(
+                0.75,
+                self.bollinger_b_entry,
+            )
         )
 
         earlier_lower_band_context = (
-            percent_b_prev <= 0.65
+            percent_b_prev <= 0.80
+        )
+
+        # إذا كان السعر تحت/حول Bollinger السفلي
+        # نعتبره منطقة ارتداد محتملة.
+        bollinger_recovery = (
+            percent_b
+            >= percent_b_prev - 0.05
         )
 
         pullback_context = (
             lower_band_context
             or earlier_lower_band_context
+            or bollinger_recovery
             or dip_detected
         )
 
         # ============================================================
         # 6. DON'T CHASE
+        #
+        # أصبح أكثر تساهلًا.
         # ============================================================
 
         candle_extension_pct = 0.0
@@ -683,7 +738,24 @@ class SpotStrategy:
             ) * 100.0
 
         not_chasing = (
-            candle_extension_pct <= 0.35
+            candle_extension_pct <= 0.60
+        )
+
+        # حماية من شمعة ضخمة جدًا.
+        current_range_pct = 0.0
+
+        if current_open > 0:
+
+            current_range_pct = (
+                (
+                    current_high
+                    - current_low
+                )
+                / current_open
+            ) * 100.0
+
+        not_extreme_candle = (
+            current_range_pct <= 1.50
         )
 
         # ============================================================
@@ -740,6 +812,8 @@ class SpotStrategy:
 
         # ============================================================
         # 9. DUPLICATE PRICE PROTECTION
+        #
+        # أخف من السابق.
         # ============================================================
 
         if len(df) >= 8:
@@ -779,14 +853,9 @@ class SpotStrategy:
         )
 
         # ============================================================
-        # 10. FAST ENTRY
+        # 10. FAST RECOVERY ENTRY
         #
-        # The important change:
-        #
-        # We do NOT require every indicator to turn bullish.
-        # A recent dip + first recovery + stable RSI is enough.
-        #
-        # EMA is confirmation only.
+        # لا نطلب كل المؤشرات أن تكون bullish.
         # ============================================================
 
         fast_recovery_entry = (
@@ -797,45 +866,76 @@ class SpotStrategy:
             and pullback_context
             and small_rebound_confirmed
             and not_chasing
+            and not_extreme_candle
         )
 
         # ============================================================
         # 11. IMMEDIATE REVERSAL
         #
-        # Allows an especially fast entry after a new/lower low.
+        # دخول سريع بعد تسجيل قاع جديد أو قريب منه.
         # ============================================================
 
         immediate_reversal = (
-            current_price > prev_close
+            current_price >= prev_close
             and prev_low <= prev2_low
-            and rsi_current >= rsi_prev
-            and rsi_current <= 65.0
+            and rsi_current >= rsi_prev - 1.50
+            and rsi_current <= 70.0
+            and not_chasing
+            and not_extreme_candle
+        )
+
+        # ============================================================
+        # 12. RSI QUICK REVERSAL
+        #
+        # يسمح بالدخول عندما RSI يبدأ بالاستقرار بعد ضعف.
+        # ============================================================
+
+        rsi_quick_reversal = (
+            rsi_current >= rsi_prev - 0.25
+            and rsi_current <= 68.0
+            and current_price >= prev_close
+            and dip_detected
             and not_chasing
         )
 
         # ============================================================
-        # 12. EMA-ASSISTED FAST ENTRY
-        #
-        # This can trigger when price is recovering around the EMA.
+        # 13. EMA-ASSISTED FAST ENTRY
         # ============================================================
 
         ema_fast_reversal = (
             dip_detected
-            and current_price > prev_close
-            and rsi_current >= rsi_prev
-            and rsi_current <= 67.0
+            and current_price >= prev_close
+            and rsi_current >= rsi_prev - 1.00
+            and rsi_current <= 70.0
             and ema_recovery
             and not_chasing
+            and not_extreme_candle
+        )
+
+        # ============================================================
+        # 14. VERY FAST BOTTOM ENTRY
+        #
+        # إذا كان RSI منخفضًا + السعر يرتد، لا ننتظر EMA.
+        # ============================================================
+
+        bottom_recovery = (
+            rsi_dip_bonus
+            and current_price >= prev_close
+            and rsi_current >= rsi_prev - 1.50
+            and not_chasing
+            and not_extreme_candle
         )
 
         buy_signal = (
             fast_recovery_entry
             or immediate_reversal
+            or rsi_quick_reversal
             or ema_fast_reversal
+            or bottom_recovery
         )
 
         # ============================================================
-        # 13. STOP LOSS
+        # 15. STOP LOSS
         # ============================================================
 
         suggested_sl = None
@@ -851,7 +951,7 @@ class SpotStrategy:
             )
 
         # ============================================================
-        # 14. TRAILING ACTIVATION TARGET
+        # 16. TRAILING ACTIVATION TARGET
         # ============================================================
 
         suggested_tp = None
@@ -870,7 +970,7 @@ class SpotStrategy:
             )
 
         # ============================================================
-        # 15. BUY
+        # 17. BUY
         # ============================================================
 
         if (
@@ -879,12 +979,43 @@ class SpotStrategy:
         ):
 
             if (
+                bottom_recovery
+                and not immediate_reversal
+            ):
+
+                reason = (
+                    "FAST_BOTTOM_RSI_RECOVERY"
+                    f" | symbol={symbol}"
+                    f" | dip={dip_pct:.3f}%"
+                    f" | rebound={rebound_pct:.3f}%"
+                    f" | RSI={rsi_current:.2f}"
+                    f" | %B={percent_b:.3f}"
+                    f" | EMA_SLOPE={ema_slope:.6f}"
+                )
+
+            elif (
                 immediate_reversal
                 and not fast_recovery_entry
             ):
 
                 reason = (
                     "FAST_IMMEDIATE_REVERSAL"
+                    f" | symbol={symbol}"
+                    f" | dip={dip_pct:.3f}%"
+                    f" | rebound={rebound_pct:.3f}%"
+                    f" | RSI={rsi_current:.2f}"
+                    f" | %B={percent_b:.3f}"
+                    f" | EMA_SLOPE={ema_slope:.6f}"
+                )
+
+            elif (
+                rsi_quick_reversal
+                and not fast_recovery_entry
+            ):
+
+                reason = (
+                    "FAST_RSI_REVERSAL"
+                    f" | symbol={symbol}"
                     f" | dip={dip_pct:.3f}%"
                     f" | rebound={rebound_pct:.3f}%"
                     f" | RSI={rsi_current:.2f}"
@@ -899,6 +1030,7 @@ class SpotStrategy:
 
                 reason = (
                     "FAST_EMA_REVERSAL"
+                    f" | symbol={symbol}"
                     f" | dip={dip_pct:.3f}%"
                     f" | rebound={rebound_pct:.3f}%"
                     f" | RSI={rsi_current:.2f}"
@@ -910,6 +1042,7 @@ class SpotStrategy:
 
                 reason = (
                     "FAST_BOTTOM_REBOUND"
+                    f" | symbol={symbol}"
                     f" | dip={dip_pct:.3f}%"
                     f" | rebound={rebound_pct:.3f}%"
                     f" | RSI={rsi_current:.2f}"
@@ -929,21 +1062,23 @@ class SpotStrategy:
             )
 
         # ============================================================
-        # 16. HOLD DIAGNOSTICS
+        # 18. HOLD DIAGNOSTICS
         # ============================================================
 
         reason = (
             "WAIT_FAST_REVERSAL"
+            f" | symbol={symbol}"
             f" | dip={dip_detected}"
             f" | rebound={rebound}"
             f" | rsi_recovery={rsi_recovery}"
             f" | rsi={rsi_current:.2f}"
             f" | %B={percent_b:.3f}"
-            f" | ema={ema_current:.2f}"
+            f" | ema={ema_current:.8f}"
             f" | ema_slope={ema_slope:.6f}"
             f" | ema_recovery={ema_recovery}"
             f" | pullback={pullback_context}"
             f" | not_chasing={not_chasing}"
+            f" | candle_ok={not_extreme_candle}"
             f" | duplicate_guard={duplicate_guard_ok}"
         )
 
@@ -988,3 +1123,4 @@ class SpotStrategy:
             positions=positions,
             available_slot_id=available_slot_id,
         )
+```
