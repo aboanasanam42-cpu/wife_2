@@ -33,6 +33,41 @@ from strategy import SpotStrategy
 logger = logging.getLogger("wife_2")
 
 
+# =========================================================
+# SYMBOL HELPERS
+# =========================================================
+
+def get_symbol_currencies():
+    """
+    Extract BASE/QUOTE from SYMBOL.
+
+    Example:
+        MX/USDT -> ("MX", "USDT")
+        BTC/USDT -> ("BTC", "USDT")
+    """
+    symbol = str(SYMBOL).strip().upper()
+
+    if "/" not in symbol:
+        raise RuntimeError(
+            f"Invalid SYMBOL={symbol!r}. Expected BASE/QUOTE."
+        )
+
+    base_currency, quote_currency = symbol.split("/", 1)
+
+    base_currency = base_currency.strip().upper()
+    quote_currency = quote_currency.strip().upper()
+
+    if not base_currency or not quote_currency:
+        raise RuntimeError(
+            f"Invalid SYMBOL={symbol!r}. Expected BASE/QUOTE."
+        )
+
+    return base_currency, quote_currency
+
+
+BASE_CURRENCY, QUOTE_CURRENCY = get_symbol_currencies()
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -44,6 +79,10 @@ def ensure_state_directory():
         os.makedirs(directory, exist_ok=True)
 
 
+# =========================================================
+# STATE
+# =========================================================
+
 def load_state():
     ensure_state_directory()
 
@@ -52,6 +91,7 @@ def load_state():
             "positions": [],
             "last_buy_time": 0.0,
         }
+
         save_state(state)
         return state
 
@@ -69,6 +109,9 @@ def load_state():
         data.setdefault("positions", [])
         data.setdefault("last_buy_time", 0.0)
 
+        if not isinstance(data["positions"], list):
+            data["positions"] = []
+
         return data
 
     except Exception as exc:
@@ -81,65 +124,6 @@ def load_state():
             "positions": [],
             "last_buy_time": 0.0,
         }
-
-
-def reconcile_state_with_wallet(client, state):
-    """Reconcile persisted BTC positions with the real Spot wallet."""
-    balances = client.balance()
-    free_btc = float((balances.get("free", {}) or {}).get("BTC") or 0.0)
-    price = client.last_price()
-    limits = client.market().get("limits", {})
-    min_amount = float((limits.get("amount", {}) or {}).get("min") or 0.0)
-    min_cost = float((limits.get("cost", {}) or {}).get("min") or 0.0)
-
-    active = active_positions(state)
-    if active:
-        position = active[0]
-        if free_btc <= 0 or free_btc < min_amount or free_btc * price < min_cost:
-            position["active"] = False
-            position["reconciled_at"] = utc_now()
-            position["reconciliation_reason"] = "No sellable BTC remained in Spot wallet."
-        else:
-            position["amount"] = min(float(position.get("amount", free_btc)), free_btc)
-            position["highest_price"] = max(
-                float(position.get("highest_price", position.get("entry_price", price))),
-                price,
-            )
-            position["last_observed_price"] = price
-    elif free_btc >= min_amount and free_btc * price >= min_cost:
-        recovered_slot = next_slot_id(state)
-        state["positions"].append(
-            {
-                "slot_id": recovered_slot,
-                "symbol": SYMBOL,
-                "active": True,
-                "amount": free_btc,
-                "entry_price": price,
-                "highest_price": price,
-                "last_observed_price": price,
-                "stop_loss": price * (1.0 - STOP_LOSS_PCT / 100.0),
-                "trailing_active": False,
-                "recovered_from_wallet": True,
-                "opened_at": utc_now(),
-                "opened_at_epoch": time.time(),
-            }
-        )
-        logger.warning(
-            "Recovered wallet position: symbol=%s amount=%.10f price=%.2f",
-            SYMBOL,
-            free_btc,
-            price,
-        )
-
-    save_state(state)
-    logger.info(
-        "WALLET_SYNC symbol=%s BTC_FREE=%.10f USDT_FREE=%.8f active_positions=%d",
-        SYMBOL,
-        free_btc,
-        float((balances.get("free", {}) or {}).get("USDT") or 0.0),
-        len(active_positions(state)),
-    )
-    return state
 
 
 def save_state(state):
@@ -164,6 +148,251 @@ def save_state(state):
         STATE_FILE,
     )
 
+
+def active_positions(state):
+    return [
+        position
+        for position in state.get("positions", [])
+        if position.get("active") is True
+        and position.get("symbol") == SYMBOL
+    ]
+
+
+def all_active_positions(state):
+    return [
+        position
+        for position in state.get("positions", [])
+        if position.get("active") is True
+    ]
+
+
+def next_slot_id(state):
+    existing = {
+        str(position.get("slot_id"))
+        for position in state.get("positions", [])
+    }
+
+    index = 1
+
+    while f"slot-{index}" in existing:
+        index += 1
+
+    return f"slot-{index}"
+
+
+# =========================================================
+# WALLET HELPERS
+# =========================================================
+
+def get_free_balance_from_wallet(
+    balances,
+    currency,
+):
+    """
+    Read a free balance without assuming BTC or any other
+    hard-coded currency.
+    """
+    free_balances = balances.get("free", {}) or {}
+
+    value = free_balances.get(currency)
+
+    if value is None:
+        currency_data = balances.get(currency, {}) or {}
+        value = currency_data.get("free", 0.0)
+
+    return float(value or 0.0)
+
+
+def reconcile_state_with_wallet(client, state):
+    """
+    Reconcile the bot's CURRENT SYMBOL position with the real
+    Spot wallet.
+
+    IMPORTANT:
+    - Never assumes BTC.
+    - Never converts a BTC balance into an MX position.
+    - Never automatically creates a bot position merely because
+      some base currency exists in the wallet.
+    - Only reconciles an already persisted position belonging
+      to the current SYMBOL.
+    """
+
+    balances = client.balance()
+
+    base_currency = BASE_CURRENCY
+    quote_currency = QUOTE_CURRENCY
+
+    free_base = get_free_balance_from_wallet(
+        balances,
+        base_currency,
+    )
+
+    free_quote = get_free_balance_from_wallet(
+        balances,
+        quote_currency,
+    )
+
+    price = client.last_price()
+
+    market = client.market()
+    limits = market.get("limits", {}) or {}
+
+    min_amount = float(
+        (limits.get("amount", {}) or {}).get("min") or 0.0
+    )
+
+    min_cost = float(
+        (limits.get("cost", {}) or {}).get("min") or 0.0
+    )
+
+    active = active_positions(state)
+
+    # -----------------------------------------------------
+    # IMPORTANT:
+    # Ignore active positions belonging to another symbol.
+    # This prevents an old BTC/USDT position from becoming
+    # an MX/USDT position.
+    # -----------------------------------------------------
+
+    mismatched_active = [
+        position
+        for position in state.get("positions", [])
+        if position.get("active") is True
+        and position.get("symbol") != SYMBOL
+    ]
+
+    if mismatched_active:
+        for position in mismatched_active:
+            logger.warning(
+                "Ignoring active position from different symbol: "
+                "position_symbol=%s current_symbol=%s slot=%s",
+                position.get("symbol"),
+                SYMBOL,
+                position.get("slot_id"),
+            )
+
+            # Do NOT sell it.
+            # Do NOT convert it.
+            # Do NOT treat it as the current pair.
+            position["ignored_for_current_symbol"] = True
+
+    # -----------------------------------------------------
+    # CURRENT SYMBOL POSITION
+    # -----------------------------------------------------
+
+    if active:
+        position = active[0]
+
+        stored_amount = float(
+            position.get(
+                "amount",
+                0.0,
+            )
+        )
+
+        # If the wallet no longer has enough of the BASE
+        # currency for this current-symbol position, close
+        # the internal position record.
+        if (
+            free_base <= 0
+            or (
+                min_amount > 0
+                and free_base < min_amount
+            )
+            or (
+                min_cost > 0
+                and free_base * price < min_cost
+            )
+        ):
+            position["active"] = False
+            position["reconciled_at"] = utc_now()
+            position["reconciliation_reason"] = (
+                f"No sellable {base_currency} remained "
+                f"for {SYMBOL}."
+            )
+
+            logger.warning(
+                "POSITION CLOSED BY WALLET RECONCILIATION: "
+                "symbol=%s base=%s free_base=%.12f",
+                SYMBOL,
+                base_currency,
+                free_base,
+            )
+
+        else:
+            position["amount"] = min(
+                stored_amount if stored_amount > 0 else free_base,
+                free_base,
+            )
+
+            position["highest_price"] = max(
+                float(
+                    position.get(
+                        "highest_price",
+                        position.get(
+                            "entry_price",
+                            price,
+                        ),
+                    )
+                ),
+                price,
+            )
+
+            position["last_observed_price"] = price
+
+            position["symbol"] = SYMBOL
+
+            logger.info(
+                "POSITION_RECONCILED symbol=%s "
+                "base=%s amount=%.12f price=%.8f",
+                SYMBOL,
+                base_currency,
+                position["amount"],
+                price,
+            )
+
+    # -----------------------------------------------------
+    # IMPORTANT SAFETY RULE:
+    #
+    # Do NOT automatically create a bot position from any
+    # wallet balance.
+    #
+    # An existing MX balance could have been purchased
+    # manually and must not automatically become a bot trade.
+    # -----------------------------------------------------
+
+    else:
+        if free_base > 0:
+            logger.info(
+                "UNTRACKED_WALLET_BALANCE symbol=%s "
+                "base=%s free_base=%.12f. "
+                "Not adopting it as a bot position.",
+                SYMBOL,
+                base_currency,
+                free_base,
+            )
+
+    save_state(state)
+
+    logger.info(
+        "WALLET_SYNC symbol=%s "
+        "BASE=%s BASE_FREE=%.12f "
+        "QUOTE=%s QUOTE_FREE=%.8f "
+        "active_positions=%d",
+        SYMBOL,
+        base_currency,
+        free_base,
+        quote_currency,
+        free_quote,
+        len(active_positions(state)),
+    )
+
+    return state
+
+
+# =========================================================
+# DATAFRAME
+# =========================================================
 
 def build_dataframe(raw_ohlcv):
     if not raw_ohlcv:
@@ -196,12 +425,16 @@ def build_dataframe(raw_ohlcv):
     df = df.dropna()
 
     if len(df) > 1:
-        # The last candle can still be forming.
-        # The strategy must use closed candles only.
+        # Last candle can still be forming.
+        # Strategy works only on closed candles.
         df = df.iloc[:-1].copy()
 
     return df.reset_index(drop=True)
 
+
+# =========================================================
+# STRATEGY
+# =========================================================
 
 def create_strategy():
     return SpotStrategy(
@@ -219,27 +452,9 @@ def create_strategy():
     )
 
 
-def active_positions(state):
-    return [
-        position
-        for position in state["positions"]
-        if position.get("active") is True
-    ]
-
-
-def next_slot_id(state):
-    existing = {
-        str(position.get("slot_id"))
-        for position in state["positions"]
-    }
-
-    index = 1
-
-    while f"slot-{index}" in existing:
-        index += 1
-
-    return f"slot-{index}"
-
+# =========================================================
+# ORDER HELPERS
+# =========================================================
 
 def position_amount_from_order(order):
     filled = order.get("filled")
@@ -270,7 +485,10 @@ def position_amount_from_order(order):
     )
 
 
-def position_average_price(order, fallback_price):
+def position_average_price(
+    order,
+    fallback_price,
+):
     average = order.get("average")
 
     if average is not None:
@@ -295,8 +513,17 @@ def position_average_price(order, fallback_price):
     return float(fallback_price)
 
 
-def update_trailing_position(position, current_price):
-    entry = float(position["entry_price"])
+# =========================================================
+# TRAILING STOP
+# =========================================================
+
+def update_trailing_position(
+    position,
+    current_price,
+):
+    entry = float(
+        position["entry_price"]
+    )
 
     highest = max(
         float(
@@ -308,7 +535,13 @@ def update_trailing_position(position, current_price):
         current_price,
     )
 
-    previous_price = float(position.get("last_observed_price", entry))
+    previous_price = float(
+        position.get(
+            "last_observed_price",
+            entry,
+        )
+    )
+
     position["highest_price"] = highest
     position["last_observed_price"] = current_price
 
@@ -347,13 +580,32 @@ def update_trailing_position(position, current_price):
 
         position["trailing_active"] = True
 
-        drawdown_pct = (highest - current_price) / highest * 100.0 if highest > 0 else 0.0
-        if current_price < previous_price and drawdown_pct >= TRAILING_STOP_OFFSET_PCT:
-            position["trailing_decline_confirmations"] = int(
-                position.get("trailing_decline_confirmations", 0)
+        drawdown_pct = (
+            (highest - current_price)
+            / highest
+            * 100.0
+            if highest > 0
+            else 0.0
+        )
+
+        if (
+            current_price < previous_price
+            and drawdown_pct
+            >= TRAILING_STOP_OFFSET_PCT
+        ):
+            position[
+                "trailing_decline_confirmations"
+            ] = int(
+                position.get(
+                    "trailing_decline_confirmations",
+                    0,
+                )
             ) + 1
+
         elif current_price >= previous_price:
-            position["trailing_decline_confirmations"] = 0
+            position[
+                "trailing_decline_confirmations"
+            ] = 0
 
     return position
 
@@ -362,7 +614,9 @@ def should_exit_position(
     position,
     current_price,
 ):
-    entry = float(position["entry_price"])
+    entry = float(
+        position["entry_price"]
+    )
 
     stop = float(
         position.get(
@@ -377,15 +631,40 @@ def should_exit_position(
 
     if (
         position.get("trailing_active")
-        and int(position.get("trailing_decline_confirmations", 0))
+        and int(
+            position.get(
+                "trailing_decline_confirmations",
+                0,
+            )
+        )
         >= TRAILING_CONFIRMATION_CANDLES
     ):
-        highest = float(position.get("highest_price", entry))
-        drawdown_pct = (highest - current_price) / highest * 100.0 if highest > 0 else 0.0
-        return True, f"Trailing decline from highest price ({drawdown_pct:.3f}%)"
+        highest = float(
+            position.get(
+                "highest_price",
+                entry,
+            )
+        )
+
+        drawdown_pct = (
+            (highest - current_price)
+            / highest
+            * 100.0
+            if highest > 0
+            else 0.0
+        )
+
+        return (
+            True,
+            "Trailing decline from highest price "
+            f"({drawdown_pct:.3f}%)",
+        )
 
     if current_price <= stop:
-        return True, "stop-loss/trailing-stop"
+        return (
+            True,
+            "stop-loss/trailing-stop",
+        )
 
     opened_at = float(
         position.get(
@@ -399,10 +678,17 @@ def should_exit_position(
         and time.time() - opened_at
         >= MAX_HOLD_TIME_SEC
     ):
-        return True, "maximum-hold-time"
+        return (
+            True,
+            "maximum-hold-time",
+        )
 
     return False, ""
 
+
+# =========================================================
+# BUY
+# =========================================================
 
 def execute_buy(
     client,
@@ -423,7 +709,16 @@ def execute_buy(
         )
         return
 
-    available_usdt = client.free_balance("USDT")
+    # This project uses USDT as the quote currency.
+    if QUOTE_CURRENCY != "USDT":
+        raise RuntimeError(
+            f"TRADE_AMOUNT_USDT requires USDT quote currency, "
+            f"but SYMBOL={SYMBOL} uses {QUOTE_CURRENCY}"
+        )
+
+    available_usdt = client.free_balance(
+        QUOTE_CURRENCY
+    )
 
     spendable = (
         available_usdt
@@ -432,8 +727,9 @@ def execute_buy(
 
     if spendable <= 0:
         logger.warning(
-            "No spendable USDT. "
+            "No spendable %s. "
             "available=%.8f reserve=%.8f",
+            QUOTE_CURRENCY,
             available_usdt,
             CASH_RESERVE_USDT,
         )
@@ -445,8 +741,15 @@ def execute_buy(
     )
 
     logger.warning(
-        "SIGNAL=BUY SYMBOL=%s USDT_BALANCE=%.8f BUY_AMOUNT=%.8f",
+        "SIGNAL=BUY "
+        "SYMBOL=%s "
+        "BASE=%s "
+        "QUOTE=%s "
+        "USDT_BALANCE=%.8f "
+        "BUY_AMOUNT=%.8f",
         SYMBOL,
+        BASE_CURRENCY,
+        QUOTE_CURRENCY,
         available_usdt,
         amount_usdt,
     )
@@ -454,7 +757,10 @@ def execute_buy(
     order = client.create_market_buy(
         amount_usdt
     )
-    order = client.confirm_order(order)
+
+    order = client.confirm_order(
+        order
+    )
 
     filled_amount = position_amount_from_order(
         order
@@ -511,21 +817,39 @@ def execute_buy(
         "buy_cost_usdt": amount_usdt,
     }
 
-    state["positions"].append(position)
+    state["positions"].append(
+        position
+    )
 
     state["last_buy_time"] = time.time()
 
     save_state(state)
 
     logger.warning(
-        "BUY FILLED: slot=%s amount=%s entry=%s order_id=%s status=%s",
+        "BUY FILLED: "
+        "symbol=%s "
+        "base=%s "
+        "slot=%s "
+        "amount=%s "
+        "entry=%s "
+        "order_id=%s "
+        "status=%s",
+        SYMBOL,
+        BASE_CURRENCY,
         slot_id,
         filled_amount,
         entry,
         order.get("id"),
-        order.get("status", "unknown"),
+        order.get(
+            "status",
+            "unknown",
+        ),
     )
 
+
+# =========================================================
+# SELL
+# =========================================================
 
 def execute_sell(
     client,
@@ -534,11 +858,29 @@ def execute_sell(
     reason,
     current_price,
 ):
-    amount = float(position["amount"])
+    # Never sell a position belonging to another symbol.
+    if position.get("symbol") != SYMBOL:
+        logger.error(
+            "SELL BLOCKED: position symbol=%s "
+            "does not match current SYMBOL=%s",
+            position.get("symbol"),
+            SYMBOL,
+        )
+        return
+
+    amount = float(
+        position["amount"]
+    )
 
     logger.warning(
-        "SIGNAL=SELL SYMBOL=%s ENTRY_PRICE=%.8f SELL_AMOUNT=%.10f reason=%s",
+        "SIGNAL=SELL "
+        "SYMBOL=%s "
+        "BASE=%s "
+        "ENTRY_PRICE=%.8f "
+        "SELL_AMOUNT=%.10f "
+        "reason=%s",
         SYMBOL,
+        BASE_CURRENCY,
         float(position["entry_price"]),
         amount,
         reason,
@@ -547,7 +889,10 @@ def execute_sell(
     order = client.create_market_sell(
         amount
     )
-    order = client.confirm_order(order)
+
+    order = client.confirm_order(
+        order
+    )
 
     sold_amount = position_amount_from_order(
         order
@@ -567,7 +912,9 @@ def execute_sell(
     position["exit_reason"] = reason
     position["sold_amount"] = sold_amount
 
-    entry = float(position["entry_price"])
+    entry = float(
+        position["entry_price"]
+    )
 
     position["pnl_pct_estimate"] = (
         (current_price - entry)
@@ -578,26 +925,59 @@ def execute_sell(
     save_state(state)
 
     logger.warning(
-        "SELL FILLED: slot=%s amount=%s order_id=%s status=%s estimated_pnl=%+.3f%% POSITION=CLOSED STATE=SEARCHING_BOTTOM",
+        "SELL FILLED: "
+        "symbol=%s "
+        "slot=%s "
+        "amount=%s "
+        "order_id=%s "
+        "status=%s "
+        "estimated_pnl=%+.3f%% "
+        "POSITION=CLOSED "
+        "STATE=SEARCHING_BOTTOM",
+        SYMBOL,
         position["slot_id"],
         sold_amount,
         order.get("id"),
-        order.get("status", "unknown"),
+        order.get(
+            "status",
+            "unknown",
+        ),
         position["pnl_pct_estimate"],
     )
 
+
+# =========================================================
+# MAIN TRADING CYCLE
+# =========================================================
 
 def run_cycle(
     client,
     strategy,
     state,
 ):
-    if state.get("wallet_reconciliation_pending"):
+    if state.get(
+        "wallet_reconciliation_pending"
+    ):
         try:
-            reconcile_state_with_wallet(client, state)
-            state.pop("wallet_reconciliation_pending", None)
+            reconcile_state_with_wallet(
+                client,
+                state,
+            )
+
+            state.pop(
+                "wallet_reconciliation_pending",
+                None,
+            )
+
         except Exception as exc:
-            logger.error("Wallet reconciliation retry failed: %s", exc)
+            logger.error(
+                "Wallet reconciliation retry failed: %s",
+                exc,
+            )
+
+    # -----------------------------------------------------
+    # OHLCV
+    # -----------------------------------------------------
 
     raw = client.ohlcv(
         timeframe=TIMEFRAME,
@@ -606,23 +986,20 @@ def run_cycle(
 
     df = build_dataframe(raw)
 
-    # ---------------------------------------------------------
-    # IMPORTANT FIX:
-    # Do not call evaluate_entry_signal() before calculating
-    # RSI, Bollinger Bands, EMA and ATR.
-    # ---------------------------------------------------------
-
     if df.empty:
         logger.info(
             "No closed candle data available."
         )
         return
 
-    # Calculate all technical indicators required
-    # by strategy.evaluate_entry_signal().
-    df = strategy.calculate_indicators(df)
+    # -----------------------------------------------------
+    # INDICATORS
+    # -----------------------------------------------------
 
-    # Verify the indicators required by the strategy exist.
+    df = strategy.calculate_indicators(
+        df
+    )
+
     required_columns = [
         "rsi",
         "bb_percent_b",
@@ -642,7 +1019,9 @@ def run_cycle(
     if missing_columns:
         raise RuntimeError(
             "Strategy indicators are missing: "
-            + ", ".join(missing_columns)
+            + ", ".join(
+                missing_columns
+            )
         )
 
     if len(df) < max(
@@ -655,47 +1034,81 @@ def run_cycle(
         )
         return
 
+    # -----------------------------------------------------
+    # CURRENT PRICE
+    # -----------------------------------------------------
+
     ticker = client.ticker()
 
-    current_price = ticker.get("last")
+    current_price = ticker.get(
+        "last"
+    )
 
     if current_price is None:
         raise RuntimeError(
             "MEXC returned no current price"
         )
 
-    current_price = float(current_price)
+    current_price = float(
+        current_price
+    )
 
-    positions = active_positions(state)
+    # -----------------------------------------------------
+    # CURRENT SYMBOL POSITIONS ONLY
+    # -----------------------------------------------------
 
-    # ---------------------------------------------------------
-    # UPDATE POSITIONS AND PROCESS EXITS FIRST
-    # ---------------------------------------------------------
+    positions = active_positions(
+        state
+    )
+
+    # -----------------------------------------------------
+    # EXITS FIRST
+    # -----------------------------------------------------
 
     for position in positions:
-        if position.get("symbol") != SYMBOL:
-            continue
-
         update_trailing_position(
             position,
             current_price,
         )
 
-        highest_price = float(position.get("highest_price", position["entry_price"]))
+        highest_price = float(
+            position.get(
+                "highest_price",
+                position["entry_price"],
+            )
+        )
+
         drawdown_pct = (
-            (highest_price - current_price) / highest_price * 100.0
+            (highest_price - current_price)
+            / highest_price
+            * 100.0
             if highest_price > 0
             else 0.0
         )
+
         logger.info(
-            "PRICE=%.2f STATE=%s ENTRY_PRICE=%.2f HIGHEST_PRICE=%.2f "
+            "PRICE=%.8f "
+            "SYMBOL=%s "
+            "STATE=%s "
+            "ENTRY_PRICE=%.8f "
+            "HIGHEST_PRICE=%.8f "
             "DRAWDOWN_FROM_HIGH=%.3f%%",
             current_price,
-            "TRAILING" if position.get("trailing_active") else "TRACKING",
-            float(position["entry_price"]),
+            SYMBOL,
+            (
+                "TRAILING"
+                if position.get(
+                    "trailing_active"
+                )
+                else "TRACKING"
+            ),
+            float(
+                position["entry_price"]
+            ),
             highest_price,
             drawdown_pct,
         )
+
         save_state(state)
 
         exit_now, reason = should_exit_position(
@@ -714,16 +1127,20 @@ def run_cycle(
                 )
             else:
                 logger.warning(
-                    "DRY RUN SELL: slot=%s reason=%s",
+                    "DRY RUN SELL: "
+                    "symbol=%s slot=%s reason=%s",
+                    SYMBOL,
                     position["slot_id"],
                     reason,
                 )
 
-    positions = active_positions(state)
+    positions = active_positions(
+        state
+    )
 
-    # ---------------------------------------------------------
-    # DETERMINE AVAILABLE SLOT
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # AVAILABLE SLOT
+    # -----------------------------------------------------
 
     available_slot_id = None
 
@@ -732,9 +1149,9 @@ def run_cycle(
             state
         )
 
-    # ---------------------------------------------------------
-    # GENERATE ENTRY SIGNAL
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # ENTRY SIGNAL
+    # -----------------------------------------------------
 
     signal = strategy.evaluate_entry_signal(
         SYMBOL,
@@ -744,8 +1161,14 @@ def run_cycle(
     )
 
     logger.info(
-        "PRICE=%.8f SIGNAL=%s RSI=%.2f %%B=%.3f REASON=%s",
+        "PRICE=%.8f "
+        "SYMBOL=%s "
+        "SIGNAL=%s "
+        "RSI=%.2f "
+        "%%B=%.3f "
+        "REASON=%s",
         current_price,
+        SYMBOL,
         signal.action,
         signal.rsi_value,
         signal.percent_b,
@@ -762,18 +1185,24 @@ def run_cycle(
         )
         return
 
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     # BUY COOLDOWN
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
 
-    cooldown = time.time() - float(
-        state.get(
-            "last_buy_time",
-            0.0,
+    cooldown = (
+        time.time()
+        - float(
+            state.get(
+                "last_buy_time",
+                0.0,
+            )
         )
     )
 
-    buy_cooldown_seconds = max(0, BUY_COOLDOWN_SEC)
+    buy_cooldown_seconds = max(
+        0,
+        BUY_COOLDOWN_SEC,
+    )
 
     if cooldown < buy_cooldown_seconds:
         remaining = (
@@ -782,14 +1211,15 @@ def run_cycle(
         )
 
         logger.info(
-            "Buy cooldown active: %.1fs remaining",
+            "Buy cooldown active: "
+            "%.1fs remaining",
             remaining,
         )
         return
 
-    # ---------------------------------------------------------
-    # EXECUTE BUY OR DRY RUN
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # BUY
+    # -----------------------------------------------------
 
     if LIVE_TRADING:
         execute_buy(
@@ -804,6 +1234,10 @@ def run_cycle(
         )
 
 
+# =========================================================
+# STARTUP
+# =========================================================
+
 def run():
     logging.basicConfig(
         level=getattr(
@@ -815,7 +1249,6 @@ def run():
             logging.INFO,
         ),
         format=(
-
             "%(asctime)s | "
             "%(levelname)s | "
             "%(message)s"
@@ -831,8 +1264,22 @@ def run():
     logger.warning("=" * 70)
 
     logger.warning(
-        "SYMBOL=%s TIMEFRAME=%s",
+        "SYMBOL=%s",
         SYMBOL,
+    )
+
+    logger.warning(
+        "BASE_CURRENCY=%s",
+        BASE_CURRENCY,
+    )
+
+    logger.warning(
+        "QUOTE_CURRENCY=%s",
+        QUOTE_CURRENCY,
+    )
+
+    logger.warning(
+        "TIMEFRAME=%s",
         TIMEFRAME,
     )
 
@@ -856,16 +1303,67 @@ def run():
         LOOP_INTERVAL_SECONDS,
     )
 
+    # -----------------------------------------------------
+    # SAFETY CHECK
+    # -----------------------------------------------------
+
+    if SYMBOL != f"{BASE_CURRENCY}/{QUOTE_CURRENCY}":
+        raise RuntimeError(
+            "Internal SYMBOL parsing error"
+        )
+
+    if QUOTE_CURRENCY != "USDT":
+        raise RuntimeError(
+            f"This worker expects a USDT quote currency. "
+            f"Current SYMBOL={SYMBOL}"
+        )
+
     client = None
+
     while client is None:
         try:
             client = MEXCClient()
-            logger.warning("MEXC Spot connection: OK")
-            logger.warning("MEXC market type: SPOT")
-            logger.warning("Current price: %s", client.last_price())
+
+            logger.warning(
+                "MEXC Spot connection: OK"
+            )
+
+            logger.warning(
+                "MEXC market type: SPOT"
+            )
+
+            logger.warning(
+                "MEXC active market: %s",
+                SYMBOL,
+            )
+
+            logger.warning(
+                "Base currency: %s",
+                BASE_CURRENCY,
+            )
+
+            logger.warning(
+                "Quote currency: %s",
+                QUOTE_CURRENCY,
+            )
+
+            logger.warning(
+                "Current price: %s",
+                client.last_price(),
+            )
+
         except Exception as exc:
-            logger.error("MEXC startup failed; retrying: %s", exc)
-            time.sleep(max(5, LOOP_INTERVAL_SECONDS))
+            logger.error(
+                "MEXC startup failed; retrying: %s",
+                exc,
+            )
+
+            time.sleep(
+                max(
+                    5,
+                    LOOP_INTERVAL_SECONDS,
+                )
+            )
 
     if LIVE_TRADING:
         logger.warning(
@@ -875,6 +1373,7 @@ def run():
         logger.warning(
             "The worker can place real BUY/SELL orders."
         )
+
     else:
         logger.warning(
             "DRY RUN MODE - NO REAL ORDERS"
@@ -885,11 +1384,28 @@ def run():
     state = load_state()
 
     try:
-        state = reconcile_state_with_wallet(client, state)
-        state.pop("wallet_reconciliation_pending", None)
+        state = reconcile_state_with_wallet(
+            client,
+            state,
+        )
+
+        state.pop(
+            "wallet_reconciliation_pending",
+            None,
+        )
+
     except Exception as exc:
-        logger.error("Wallet state reconciliation failed; retaining state: %s", exc)
-        state["wallet_reconciliation_pending"] = True
+        logger.error(
+            "Wallet state reconciliation failed; "
+            "retaining state: %s",
+            exc,
+        )
+
+        state[
+            "wallet_reconciliation_pending"
+        ] = True
+
+        save_state(state)
 
     logger.warning(
         "State file: %s",
@@ -897,8 +1413,16 @@ def run():
     )
 
     logger.warning(
-        "Active positions loaded: %s",
-        len(active_positions(state)),
+        "Active positions loaded for %s: %s",
+        SYMBOL,
+        len(
+            active_positions(state)
+        ),
+    )
+
+    logger.warning(
+        "Trading pair is locked to environment SYMBOL: %s",
+        SYMBOL,
     )
 
     while True:
@@ -925,14 +1449,20 @@ def run():
 
             traceback.print_exc()
 
-        elapsed = time.time() - started
+        elapsed = (
+            time.time()
+            - started
+        )
 
         sleep_seconds = max(
             1,
-            LOOP_INTERVAL_SECONDS - elapsed,
+            LOOP_INTERVAL_SECONDS
+            - elapsed,
         )
 
-        time.sleep(sleep_seconds)
+        time.sleep(
+            sleep_seconds
+        )
 
 
 if __name__ == "__main__":
