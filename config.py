@@ -25,7 +25,7 @@ def env_int(name: str, default: int = 0) -> int:
 MEXC_API_KEY = os.getenv("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "").strip()
 
-SYMBOL = "BTC/USDT"
+SYMBOL = "MX/USDT"
 TIMEFRAME = "1m"
 
 TRADE_AMOUNT_USDT = env_float("TRADE_AMOUNT_USDT", 5.5)
