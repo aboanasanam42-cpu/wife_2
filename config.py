@@ -82,7 +82,7 @@ TIMEFRAME = os.getenv(
 
 TRADE_AMOUNT_USDT = env_float(
     "TRADE_AMOUNT_USDT",
-    2.5,
+    2.0,
 )
 
 MEXC_BUY_FEE_RATE = env_float(
@@ -95,10 +95,21 @@ MEXC_SELL_FEE_RATE = env_float(
     0.001,
 )
 
-TARGET_NET_PROFIT_RATE = env_float(
-    "TARGET_NET_PROFIT_RATE",
-    MEXC_BUY_FEE_RATE,
-)
+# Support both names used by previous Railway configurations.
+# TAKE_PROFIT_PERCENT is expressed as a percentage, e.g. 0.30 = 0.30%.
+# TARGET_NET_PROFIT_RATE is expressed as a decimal, e.g. 0.001 = 0.10%.
+if os.getenv("TARGET_NET_PROFIT_RATE") is not None:
+    TARGET_NET_PROFIT_RATE = env_float(
+        "TARGET_NET_PROFIT_RATE",
+        MEXC_BUY_FEE_RATE,
+    )
+elif os.getenv("TAKE_PROFIT_PERCENT") is not None:
+    TARGET_NET_PROFIT_RATE = max(
+        0.0,
+        env_float("TAKE_PROFIT_PERCENT", 0.30) / 100.0,
+    )
+else:
+    TARGET_NET_PROFIT_RATE = MEXC_BUY_FEE_RATE
 
 MAX_POSITIONS = max(
     1,
@@ -137,13 +148,16 @@ LIVE_TRADING = env_bool(
 # LOOP
 # ============================================================
 
+# A short polling interval is important because TP/SL in this
+# worker is monitored locally. A longer interval can miss a brief
+# price spike through the target before the next cycle runs.
 LOOP_INTERVAL_SECONDS = max(
     2,
     env_int(
         "LOOP_INTERVAL_SECONDS",
         env_int(
             "CHECK_INTERVAL_SECONDS",
-            10,
+            2,
         ),
     ),
 )
