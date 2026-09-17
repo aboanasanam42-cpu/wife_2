@@ -14,11 +14,14 @@ from config import (
     LOOP_INTERVAL_SECONDS,
     MAX_HOLD_TIME_SEC,
     MAX_POSITIONS,
+    MEXC_BUY_FEE_RATE,
+    MEXC_SELL_FEE_RATE,
     MIN_SLOT_PRICE_DIFF_PCT,
     RSI_PERIOD,
     STATE_FILE,
     STOP_LOSS_PCT,
     SYMBOL,
+    TARGET_NET_PROFIT_RATE,
     TIMEFRAME,
     TRADE_AMOUNT_USDT,
     TRAILING_CONFIRMATION_CANDLES,
@@ -449,6 +452,9 @@ def create_strategy():
         min_slot_price_diff_pct=(
             MIN_SLOT_PRICE_DIFF_PCT / 100.0
         ),
+        buy_fee=MEXC_BUY_FEE_RATE,
+        sell_fee=MEXC_SELL_FEE_RATE,
+        net_profit_rate=TARGET_NET_PROFIT_RATE,
     )
 
 
@@ -843,24 +849,14 @@ def execute_buy(
     # entry price rather than relying only on the signal price.
     # -----------------------------------------------------
 
-    activation_target = (
-        entry
-        * (
-            1.0
-            + TRAILING_STOP_ACTIVATION_PCT / 100.0
+    take_profit = client.normalize_price(
+        strategy.calculate_take_profit_price(entry)
+    )
+
+    if take_profit <= entry:
+        raise RuntimeError(
+            "Calculated take-profit price is not above the entry price"
         )
-    )
-
-    signal_target = (
-        float(signal.suggested_tp)
-        if signal.suggested_tp is not None
-        else activation_target
-    )
-
-    take_profit = max(
-        activation_target,
-        signal_target,
-    )
 
     position = {
         "slot_id": slot_id,

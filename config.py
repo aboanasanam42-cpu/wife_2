@@ -85,6 +85,21 @@ TRADE_AMOUNT_USDT = env_float(
     2.5,
 )
 
+MEXC_BUY_FEE_RATE = env_float(
+    "MEXC_BUY_FEE_RATE",
+    0.001,
+)
+
+MEXC_SELL_FEE_RATE = env_float(
+    "MEXC_SELL_FEE_RATE",
+    0.001,
+)
+
+TARGET_NET_PROFIT_RATE = env_float(
+    "TARGET_NET_PROFIT_RATE",
+    MEXC_BUY_FEE_RATE,
+)
+
 MAX_POSITIONS = max(
     1,
     env_int(

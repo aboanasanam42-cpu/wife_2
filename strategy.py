@@ -7,6 +7,31 @@ import numpy as np
 import pandas as pd
 
 
+def calculate_take_profit_price(
+    buy_price: float,
+    buy_fee: float = 0.001,
+    sell_fee: float = 0.001,
+    net_profit_rate: float = 0.001,
+) -> float:
+    buy_price = float(buy_price)
+    buy_fee = float(buy_fee)
+    sell_fee = float(sell_fee)
+    net_profit_rate = float(net_profit_rate)
+
+    if buy_price <= 0:
+        raise ValueError("buy_price must be greater than zero")
+    if not 0.0 <= buy_fee < 1.0:
+        raise ValueError("buy_fee must be in the range [0, 1)")
+    if not 0.0 <= sell_fee < 1.0:
+        raise ValueError("sell_fee must be in the range [0, 1)")
+    if net_profit_rate < 0.0:
+        raise ValueError("net_profit_rate must not be negative")
+
+    return buy_price * (1.0 + net_profit_rate) / (
+        (1.0 - buy_fee) * (1.0 - sell_fee)
+    )
+
+
 @dataclass
 class TradeSignal:
     action: str
@@ -54,6 +79,9 @@ class SpotStrategy:
         rsi_oversold: float = 38.0,
         rsi_overbought: float = 75.0,
         bollinger_b_entry: float = 0.60,
+        buy_fee: float = 0.001,
+        sell_fee: float = 0.001,
+        net_profit_rate: float = 0.001,
     ) -> None:
 
         self.rsi_period = max(
@@ -91,6 +119,18 @@ class SpotStrategy:
 
         self.bollinger_b_entry = float(
             bollinger_b_entry
+        )
+
+        self.buy_fee = float(buy_fee)
+        self.sell_fee = float(sell_fee)
+        self.net_profit_rate = float(net_profit_rate)
+
+    def calculate_take_profit_price(self, buy_price: float) -> float:
+        return calculate_take_profit_price(
+            buy_price,
+            buy_fee=self.buy_fee,
+            sell_fee=self.sell_fee,
+            net_profit_rate=self.net_profit_rate,
         )
 
     # ================================================================
