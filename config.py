@@ -38,9 +38,7 @@ TRADE_AMOUNT_USDT = env_float("TRADE_AMOUNT_USDT", 2.0)
 MEXC_BUY_FEE_RATE = env_float("MEXC_BUY_FEE_RATE", 0.001)
 MEXC_SELL_FEE_RATE = env_float("MEXC_SELL_FEE_RATE", 0.001)
 
-# TAKE_PROFIT_PERCENT is authoritative when configured in Railway.
-# Example: 0.30 = 0.30% net-profit target; strategy.py adds fees.
-# TARGET_NET_PROFIT_RATE is only a fallback for older deployments.
+# حساب صافي الأرباح المستهدفة
 if os.getenv("TAKE_PROFIT_PERCENT") is not None:
     TARGET_NET_PROFIT_RATE = max(
         0.0,
@@ -69,6 +67,8 @@ BUY_COOLDOWN_SEC = max(0, env_int("BUY_COOLDOWN_SEC", 30))
 
 RSI_PERIOD = max(2, env_int("RSI_PERIOD", 14))
 STOP_LOSS_PCT = max(0.0, env_float("STOP_LOSS_PCT", 0.40))
+
+# قراءة إعدادات الـ Trailing المحدثة
 TRAILING_STOP_ACTIVATION_PCT = max(
     0.0,
     env_float("TRAILING_STOP_ACTIVATION_PCT", 0.15),
