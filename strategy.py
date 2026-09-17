@@ -62,8 +62,8 @@ class SpotStrategy:
         buy_fee: float = 0.001,
         sell_fee: float = 0.001,
         net_profit_rate: float = 0.001,
-        ema_period: int = 9,       # مضاف للتحكم الخارجي
-        bb_period: int = 20        # مضاف للتحكم الخارجي
+        ema_period: int = 9,
+        bb_period: int = 20,
     ) -> None:
 
         self.rsi_period = max(2, int(rsi_period))
@@ -74,7 +74,7 @@ class SpotStrategy:
         self.rsi_oversold = float(rsi_oversold)
         self.rsi_overbought = float(rsi_overbought)
         self.bollinger_b_entry = float(bollinger_b_entry)
-        
+
         self.buy_fee = float(buy_fee)
         self.sell_fee = float(sell_fee)
         self.net_profit_rate = float(net_profit_rate)
@@ -129,7 +129,7 @@ class SpotStrategy:
         rs = avg_gain / avg_loss.replace(0, np.nan)
         rsi = 100.0 - (100.0 / (1.0 + rs))
         rsi = rsi.where(avg_loss != 0, 100.0)
-        
+
         both_zero = (avg_gain == 0) & (avg_loss == 0)
         rsi = rsi.where(~both_zero, 50.0)
         result["rsi"] = rsi.clip(0.0, 100.0)
@@ -209,7 +209,6 @@ class SpotStrategy:
         if current_price <= 0:
             return TradeSignal(action="HOLD", reason="INVALID_PRICE", price=current_price)
 
-        # التحقق من أن المؤشرات ليست NaN لتجنب الإشارات الزائفة
         if pd.isna(current["ema"]) or pd.isna(current["rsi"]) or pd.isna(current["bb_percent_b"]):
             return TradeSignal(action="HOLD", reason="INDICATORS_NOT_READY", price=current_price)
 
@@ -221,7 +220,7 @@ class SpotStrategy:
         percent_b = self._safe_float(current["bb_percent_b"], 0.5)
         percent_b_prev = self._safe_float(prev["bb_percent_b"], percent_b)
 
-        ema_current = self._safe_float(current["ema"], 0.0) # تعديل لمنع الالتباس مع السعر الحالي
+        ema_current = self._safe_float(current["ema"], 0.0)
         ema_prev = self._safe_float(prev["ema"], ema_current)
         ema_slope = self._safe_float(current["ema_slope"], 0.0)
 
@@ -268,3 +267,6 @@ class SpotStrategy:
         rsi_turning_up = rsi_current >= rsi_prev - 0.50
         rsi_stabilizing = rsi_current >= rsi_prev2 - 1.00
         rsi_recovery = rsi_turning_up or rsi_stabilizing
+        rsi_not_extreme = rsi_current <= self.rsi_overbought
+        rsi_dip_bonus = rsi_current <= self.rsi_oversold
+
