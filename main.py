@@ -620,6 +620,7 @@ def should_exit_position(
     position,
     current_price,
 ):
+    current_price = float(current_price)
     entry = float(
         position["entry_price"]
     )
@@ -740,6 +741,7 @@ def should_exit_position(
 
 def execute_buy(
     client,
+    strategy,
     state,
     signal,
 ):
@@ -1123,18 +1125,22 @@ def run_cycle(
 
     ticker = client.ticker()
 
-    current_price = ticker.get(
-        "last"
-    )
+    current_price = ticker.get("last")
+
+    if current_price is None:
+        current_price = ticker.get("close")
 
     if current_price is None:
         raise RuntimeError(
             "MEXC returned no current price"
         )
 
-    current_price = float(
-        current_price
-    )
+    current_price = float(current_price)
+
+    if current_price <= 0:
+        raise RuntimeError(
+            f"Invalid MEXC current price: {current_price}"
+        )
 
     # -----------------------------------------------------
     # CURRENT SYMBOL POSITIONS ONLY
@@ -1328,6 +1334,7 @@ def run_cycle(
     if LIVE_TRADING:
         execute_buy(
             client,
+            strategy,
             state,
             signal,
         )

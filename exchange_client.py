@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
+
 import ccxt
 
 from config import (
@@ -7,6 +10,9 @@ from config import (
     MEXC_API_SECRET,
     SYMBOL,
 )
+
+
+logger = logging.getLogger("wife_2.exchange_client")
 
 
 class MEXCClient:
@@ -159,25 +165,66 @@ class MEXCClient:
         self,
         amount: float,
     ) -> float:
-
-        return float(
-            self.exchange.amount_to_precision(
-                SYMBOL,
-                amount,
-            )
-        )
+        return float(self.format_amount(amount))
 
     def normalize_price(
         self,
         price: float,
     ) -> float:
+        return float(self.format_price(price))
 
-        return float(
-            self.exchange.price_to_precision(
-                SYMBOL,
-                price,
-            )
-        )
+    def _market_step(self, kind: str):
+        market = self.market()
+        precision = (market.get("precision", {}) or {}).get(kind)
+
+        if precision is not None:
+            precision = Decimal(str(precision))
+            if precision > 0:
+                # CCXT DECIMAL precision is a number of decimal places;
+                # exchange metadata may instead provide a literal step.
+                return (
+                    Decimal("1").scaleb(-int(precision))
+                    if precision >= 1
+                    else precision
+                )
+
+        info = market.get("info", {}) or {}
+        filters = info.get("filters", []) or []
+        filter_type = "LOT_SIZE" if kind == "amount" else "PRICE_FILTER"
+        key = "stepSize" if kind == "amount" else "tickSize"
+        for item in filters:
+            if item.get("filterType") == filter_type:
+                value = item.get(key)
+                if value:
+                    return Decimal(str(value))
+
+        return None
+
+    def _truncate(self, value: float, kind: str) -> str:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid {kind}: {value!r}") from exc
+
+        if decimal_value <= 0:
+            raise ValueError(f"{kind} must be greater than zero")
+
+        step = self._market_step(kind)
+        if step is not None:
+            decimal_value = (
+                decimal_value / step
+            ).to_integral_value(rounding=ROUND_DOWN) * step
+
+        if decimal_value <= 0:
+            raise ValueError(f"Normalized {kind} is zero")
+
+        return format(decimal_value, "f")
+
+    def format_amount(self, amount: float) -> str:
+        return self._truncate(amount, "amount")
+
+    def format_price(self, price: float) -> str:
+        return self._truncate(price, "price")
 
     # ========================================================
     # LIMIT HELPERS
@@ -388,14 +435,14 @@ class MEXCClient:
                 f"{base_currency} balance"
             )
 
+        requested_amount = amount
         amount = min(
             amount,
             available,
         )
 
-        amount = self.normalize_amount(
-            amount
-        )
+        formatted_amount = self.format_amount(amount)
+        amount = float(formatted_amount)
 
         if amount <= 0:
             raise RuntimeError(
@@ -421,11 +468,10 @@ class MEXCClient:
             max_amount > 0
             and amount > max_amount
         ):
-            amount = self.normalize_amount(
-                max_amount
-            )
+            formatted_amount = self.format_amount(max_amount)
+            amount = float(formatted_amount)
 
-        price = self.last_price()
+        price = float(self.format_price(self.last_price()))
 
         min_cost = self.minimum_cost()
 
@@ -444,13 +490,41 @@ class MEXCClient:
                 f"{min_cost:.8f} USDT"
             )
 
-        return (
-            self.exchange
-            .create_market_sell_order(
-                SYMBOL,
-                amount,
-            )
+        logger.info(
+            "Submitting MEXC market sell: symbol=%s requested=%s free=%s amount=%s price=%s",
+            SYMBOL,
+            requested_amount,
+            available,
+            formatted_amount,
+            self.format_price(price),
         )
+
+        try:
+            return self.exchange.create_market_sell_order(
+                SYMBOL,
+                formatted_amount,
+            )
+        except ccxt.BaseError as exc:
+            response = getattr(exc, "response", None)
+            logger.exception(
+                "MEXC sell rejected: error=%s args=%r http_status=%r code=%r response=%r",
+                str(exc),
+                getattr(exc, "args", None),
+                getattr(exc, "http_status", None),
+                getattr(exc, "code", None),
+                response,
+            )
+            raise RuntimeError(
+                f"MEXC sell rejected: {exc}; response={response!r}"
+            ) from exc
+        except Exception as exc:
+            logger.exception(
+                "Unexpected sell submission failure: symbol=%s amount=%s error=%s",
+                SYMBOL,
+                formatted_amount,
+                exc,
+            )
+            raise
 
     # ========================================================
     # ORDER CONFIRMATION
