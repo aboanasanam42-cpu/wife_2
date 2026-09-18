@@ -1,55 +1,223 @@
-import time
+from __future__ import annotations
+
 import sys
+import time
+
 from config import Config
 from exchange_client import ExchangeClient
 from strategy import TradingStrategy
 
-def main():
-    print("==================================================")
-    print("  تشغيل بوت التداول الآلي على منصة MEXC عبر السحابة")
-    print("  الوضع: تداول USDT مقابل كافة العملات النشطة")
-    print("==================================================")
 
-    client = ExchangeClient()
-    strategy = TradingStrategy(client)
+def main() -> None:
 
-    # التحقق من صحة المفاتيح
-    if not Config.API_KEY or not Config.API_SECRET:
-        print("[خطأ] لم يتم ضبط MEXC_API_KEY أو MEXC_API_SECRET في متغيرات البيئة!")
+    print("=" * 70)
+    print("MEXC SPOT TRADING WORKER")
+    print("SYMBOLS=ALL_USDT")
+    print("=" * 70)
+
+    try:
+        Config.validate()
+
+    except ValueError as exc:
+
+        print(
+            f"[CONFIG ERROR] {exc}"
+        )
+
         sys.exit(1)
 
-    while True:
-        try:
-            # 1. الاستعلام عن الرصيد الحالي
-            usdt_balance = client.get_usdt_balance()
-            print(f"\n[دورة جديدة] الرصيد المتاح: {usdt_balance:.2f} USDT | الصفقات المفتوحة: {len(strategy.open_positions)}")
+    client = ExchangeClient()
 
-            # 2. جلب جميع أزواج USDT النشطة حالياً
-            symbols = client.get_target_symbols()
+    strategy = TradingStrategy(
+        client
+    )
+
+    print(
+        "[CONFIG] "
+        f"symbols={Config.SYMBOLS}"
+    )
+
+    print(
+        "[CONFIG] "
+        f"trade_amount="
+        f"{Config.TRADE_AMOUNT_USDT:.2f} USDT"
+    )
+
+    print(
+        "[CONFIG] "
+        f"max_positions="
+        f"{Config.MAX_OPEN_POSITIONS}"
+    )
+
+    print(
+        "[CONFIG] "
+        f"take_profit="
+        f"{Config.TAKE_PROFIT_PCT}%"
+    )
+
+    print(
+        "[CONFIG] "
+        f"stop_loss="
+        f"{Config.STOP_LOSS_PCT}%"
+    )
+
+    print(
+        "[CONFIG] "
+        f"mode="
+        f"{'LIVE' if Config.LIVE_TRADING else 'DRY-RUN'}"
+    )
+
+    while True:
+
+        cycle_started = time.time()
+
+        try:
+
+            # -------------------------------------------------
+            # BALANCE
+            # -------------------------------------------------
+
+            usdt_balance = (
+                client.get_usdt_balance()
+            )
+
+            # -------------------------------------------------
+            # SYMBOLS
+            # -------------------------------------------------
+
+            symbols = (
+                client.get_target_symbols()
+            )
+
             if not symbols:
-                print("[تحذير] لم يتم العثور على أزواج نشطة. إعادة المحاولة بعد دقيقة...")
-                time.sleep(60)
+
+                print(
+                    "[MEXC] No active "
+                    "USDT Spot symbols found."
+                )
+
+                time.sleep(30)
+
                 continue
 
-            # 3. فحص العملات وإجراء العمليات
-            for symbol in symbols:
-                try:
-                    usdt_balance = strategy.run_cycle_for_symbol(symbol, usdt_balance)
-                except Exception as sym_err:
-                    print(f"[تخطي] خطأ أثناء معالجة الزوج {symbol}: {sym_err}")
-                
-                # تأخير زمني خفيف لحماية الـ IP من حدود الاستدعاء
-                time.sleep(Config.REQUEST_DELAY)
+            # -------------------------------------------------
+            # ROTATING SCAN
+            # -------------------------------------------------
 
-            print(f"[اكتملت الدورة] انتظار {Config.POLL_INTERVAL} ثانية قبل بدء الدورة التالية...")
-            time.sleep(Config.POLL_INTERVAL)
+            total_symbols = len(
+                symbols
+            )
+
+            if (
+                total_symbols
+                <= Config.MAX_SCAN_SYMBOLS
+            ):
+
+                scan_symbols = symbols
+
+            else:
+
+                rotation = int(
+                    time.time()
+                    // max(
+                        Config.POLL_INTERVAL,
+                        1,
+                    )
+                )
+
+                start = (
+                    rotation
+                    % total_symbols
+                )
+
+                ordered = (
+                    symbols[start:]
+                    + symbols[:start]
+                )
+
+                scan_symbols = ordered[
+                    : Config.MAX_SCAN_SYMBOLS
+                ]
+
+            print(
+                "\n[CYCLE] "
+                f"USDT={usdt_balance:.4f} "
+                f"universe={total_symbols} "
+                f"scanning={len(scan_symbols)} "
+                f"open={len(strategy.open_positions)} "
+                f"mode="
+                f"{'LIVE' if Config.LIVE_TRADING else 'DRY-RUN'}"
+            )
+
+            # -------------------------------------------------
+            # PROCESS SYMBOLS
+            # -------------------------------------------------
+
+            for symbol in scan_symbols:
+
+                try:
+
+                    usdt_balance = (
+                        strategy.run_cycle_for_symbol(
+                            symbol,
+                            usdt_balance,
+                        )
+                    )
+
+                except Exception as exc:
+
+                    print(
+                        f"[SYMBOL ERROR] "
+                        f"{symbol}: {exc}"
+                    )
+
+                time.sleep(
+                    Config.REQUEST_DELAY
+                )
+
+            # -------------------------------------------------
+            # WAIT
+            # -------------------------------------------------
+
+            elapsed = (
+                time.time()
+                - cycle_started
+            )
+
+            sleep_for = max(
+                0.0,
+                Config.POLL_INTERVAL
+                - elapsed,
+            )
+
+            print(
+                "[CYCLE COMPLETE] "
+                f"open="
+                f"{len(strategy.open_positions)} "
+                f"sleep="
+                f"{sleep_for:.1f}s"
+            )
+
+            time.sleep(
+                sleep_for
+            )
 
         except KeyboardInterrupt:
-            print("\nتم إيقاف البوت يدوياً.")
-            break
-        except Exception as e:
-            print(f"[خطأ غير متوقع في الحلقة الرئيسية]: {e}")
+
+            print(
+                "\nBot stopped by user."
+            )
+
+            return
+
+        except Exception as exc:
+
+            print(
+                f"[WORKER ERROR] {exc}"
+            )
+
             time.sleep(15)
+
 
 if __name__ == "__main__":
     main()
