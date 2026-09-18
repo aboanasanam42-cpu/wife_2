@@ -2,18 +2,30 @@ name: CI Pipeline
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
+
   pull_request:
-    branches: ["main"]
+    branches:
+      - main
 
 jobs:
+
   python-engine:
+
     name: Python Trading Engine Validation
+
     runs-on: ubuntu-latest
+
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version:
+          - "3.12"
+          - "3.13"
+
     steps:
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -26,27 +38,183 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Python Syntax Validation
         run: |
-          python -m py_compile main.py config.py strategy.py exchange_client.py notifier.py
+          python -m py_compile \
+            main.py \
+            config.py \
+            strategy.py \
+            exchange_client.py \
+            notifier.py
 
-      - name: Strategy Smoke Test
+      - name: Configuration Smoke Test
+        env:
+          MEXC_API_KEY: test-key
+          MEXC_API_SECRET: test-secret
+          MEXC_BASE_URL: https://api.mexc.com
+          SYMBOLS: ALL_USDT
+          TRADE_AMOUNT_USDT: "6"
+          MAX_OPEN_POSITIONS: "3"
+          TAKE_PROFIT_PCT: "1.5"
+          STOP_LOSS_PCT: "2"
+          TIMEFRAME: 1m
+          CANDLE_LIMIT: "100"
+          RSI_PERIOD: "14"
+          BUY_RSI_MAX: "38"
+          BUY_REBOUND_PCT: "0.05"
+          MAX_SCAN_SYMBOLS: "60"
+          SYMBOLS_REFRESH_MINUTES: "30"
+          REQUEST_DELAY: "0"
+          POLL_INTERVAL: "0"
+          LIVE_TRADING: "false"
+
         run: |
           python - <<'PY'
-          import pandas as pd
-          from strategy import SpotStrategy
+          from config import Config
 
-          strat = SpotStrategy()
-          rows = []
-          price = 100.0
-          for i in range(80):
-              price *= 1.0 + (0.0005 if i % 3 else -0.0003)
-              rows.append([i, price, price * 1.001, price * 0.999, price, 1000])
-          df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
-          result = strat.evaluate_entry_signal("MX/USDT", df, {}, "slot-1")
-          assert result.action in {"BUY", "HOLD"}
-          assert result.price >= 0
-          print("Strategy smoke test passed:", result)
+          Config.validate()
+
+          assert Config.SYMBOLS == "ALL_USDT"
+          assert Config.LIVE_TRADING is False
+          assert Config.TRADE_AMOUNT_USDT == 6.0
+          assert Config.MAX_OPEN_POSITIONS == 3
+
+          print("Configuration smoke test passed.")
+          PY
+
+      - name: Strategy Smoke Test
+        env:
+          MEXC_API_KEY: test-key
+          MEXC_API_SECRET: test-secret
+          MEXC_BASE_URL: https://api.mexc.com
+          SYMBOLS: ALL_USDT
+          TRADE_AMOUNT_USDT: "6"
+          MAX_OPEN_POSITIONS: "3"
+          TAKE_PROFIT_PCT: "1.5"
+          STOP_LOSS_PCT: "2"
+          TIMEFRAME: 1m
+          CANDLE_LIMIT: "100"
+          RSI_PERIOD: "14"
+          BUY_RSI_MAX: "38"
+          BUY_REBOUND_PCT: "0.05"
+          MAX_SCAN_SYMBOLS: "60"
+          SYMBOLS_REFRESH_MINUTES: "30"
+          REQUEST_DELAY: "0"
+          POLL_INTERVAL: "0"
+          LIVE_TRADING: "false"
+
+        run: |
+          python - <<'PY'
+          from config import Config
+          from strategy import TradingStrategy
+
+          class FakeClient:
+
+              def get_ticker_price(self, symbol):
+                  return 100.0
+
+              def get_asset_balance(self, asset):
+                  return 0.0
+
+              def get_usdt_balance(self):
+                  return 94.0
+
+              def get_klines(self, symbol, interval, limit):
+                  rows = []
+
+                  price = 100.0
+
+                  for i in range(100):
+                      if i < 95:
+                          price *= 0.997
+
+                      elif i == 95:
+                          price *= 0.98
+
+                      else:
+                          price *= 1.002
+
+                      rows.append([
+                          i,
+                          price,
+                          price * 1.001,
+                          price * 0.999,
+                          price,
+                          1000.0,
+                      ])
+
+                  return rows
+
+              def create_market_order(
+                  self,
+                  symbol,
+                  side,
+                  quote_order_qty=None,
+                  quantity=None,
+              ):
+                  if side.upper() == "BUY":
+                      return {
+                          "orderId": "SMOKE-BUY",
+                          "symbol": symbol,
+                          "side": "BUY",
+                          "status": "FILLED",
+                          "executedQty": "0.06",
+                          "cummulativeQuoteQty": "6",
+                      }
+
+                  return {
+                      "orderId": "SMOKE-SELL",
+                      "symbol": symbol,
+                      "side": "SELL",
+                      "status": "FILLED",
+                      "executedQty": str(
+                          quantity or 0.06
+                      ),
+                          "cummulativeQuoteQty": "6",
+                  }
+
+          Config.validate()
+
+          strategy = TradingStrategy(
+              FakeClient()
+          )
+
+          candles = FakeClient().get_klines(
+              "MXUSDT",
+              "1m",
+              100,
+          )
+
+          signal = strategy.evaluate_entry_signal(
+              "MX/USDT",
+              candles,
+              {},
+              "slot-1",
+          )
+
+          assert signal["action"] in {
+              "BUY",
+              "HOLD",
+          }
+
+          assert signal["price"] >= 0
+
+          balance = (
+              strategy.run_cycle_for_symbol(
+                  "MXUSDT",
+                  100.0,
+              )
+          )
+
+          assert balance <= 100.0
+          assert len(
+              strategy.open_positions
+          ) <= Config.MAX_OPEN_POSITIONS
+
+          print(
+              "Strategy smoke test passed:",
+              signal,
+          )
           PY
