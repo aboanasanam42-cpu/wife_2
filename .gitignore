@@ -27,3 +27,6 @@ __pycache__/
 bot_state.json
 .build-outputs/
 *.apk
+*.aab
+*.gradle
+*.gradle.kts

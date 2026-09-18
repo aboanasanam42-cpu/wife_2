@@ -204,7 +204,10 @@ class SpotStrategy:
             or percent_b_prev <= self.bollinger_b_entry
         )
         rebound = price >= prev_close or price >= current_open or price >= prev_high
-        rsi_recovery = rsi >= rsi_prev - 0.5 or rsi >= rsi_prev2 - 1.0
+        rsi_recovery = (
+            rsi > rsi_prev
+            and (rsi_prev <= self.rsi_oversold or rsi_prev2 <= self.rsi_oversold)
+        )
         rsi_not_extreme = rsi <= self.rsi_overbought
         ema_ok = price >= ema * 0.997
         trend_recovering = ema_slope >= -0.001

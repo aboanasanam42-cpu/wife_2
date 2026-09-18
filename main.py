@@ -180,6 +180,8 @@ def reconcile_wallet(client: MEXCClient, state: Dict[str, Any]) -> None:
     base = str(market.get("base", "")).upper()
     quote = str(market.get("quote", "")).upper()
     free = balances.get("free", {}) if isinstance(balances, dict) else {}
+    total = balances.get("total", {}) if isinstance(balances, dict) else {}
+    total_base = finite(total.get(base)) if isinstance(total, dict) else 0.0
     free_base = finite(free.get(base)) if isinstance(free, dict) else 0.0
     free_quote = finite(free.get(quote)) if isinstance(free, dict) else 0.0
 
@@ -187,25 +189,26 @@ def reconcile_wallet(client: MEXCClient, state: Dict[str, Any]) -> None:
         state["positions"] = []
 
     tracked = active_positions(state)
-    remaining = free_base
     for position in tracked:
         wanted = max(0.0, finite(position.get("amount")))
-        amount = min(wanted, remaining) if wanted > 0 else 0.0
-        if amount <= 0:
+        if wanted <= 0:
             position["active"] = False
             position["amount"] = 0.0
             position["closed_at"] = now_iso()
             position["close_reason"] = "WALLET_NO_BASE_BALANCE"
             logger.warning("POSITION_CLOSED_BY_WALLET_SYNC slot=%s", position.get("slot_id"))
-        else:
-            position["amount"] = amount
-            remaining = max(0.0, remaining - amount)
+        elif total_base <= 0:
+            position["active"] = False
+            position["amount"] = 0.0
+            position["closed_at"] = now_iso()
+            position["close_reason"] = "WALLET_NO_BASE_BALANCE"
+            logger.warning("POSITION_CLOSED_BY_WALLET_SYNC slot=%s", position.get("slot_id"))
 
     if not tracked and free_base > 0:
         logger.info("UNTRACKED_WALLET_BALANCE symbol=%s base=%s free=%.12f; not adopted automatically", SYMBOL, base, free_base)
 
     save_state(state)
-    logger.info("WALLET_SYNC symbol=%s BASE_FREE=%.12f QUOTE_FREE=%.8f active_positions=%d", SYMBOL, free_base, free_quote, len(active_positions(state)))
+    logger.info("WALLET_SYNC symbol=%s BASE_FREE=%.12f BASE_TOTAL=%.12f QUOTE_FREE=%.8f active_positions=%d", SYMBOL, free_base, total_base, free_quote, len(active_positions(state)))
 
 
 def create_strategy() -> SpotStrategy:
@@ -289,13 +292,19 @@ def close_position(client: MEXCClient, state: Dict[str, Any], position: Dict[str
     avg = order_average(order, price)
     entry = finite(position.get("entry_price"))
     pnl_pct = ((avg - entry) / entry * 100.0) if entry > 0 else 0.0
-    position["active"] = False
-    position["amount"] = 0.0
-    position["closed_at"] = now_iso()
-    position["close_reason"] = reason
+    remaining = max(0.0, amount - filled)
     position["exit_price"] = avg
     position["exit_amount"] = filled
     position["pnl_pct"] = pnl_pct
+    if remaining > 0:
+        position["amount"] = remaining
+        position["last_sell_reason"] = reason
+        logger.warning("SELL_PARTIAL symbol=%s slot=%s filled=%.12f remaining=%.12f reason=%s", SYMBOL, position.get("slot_id"), filled, remaining, reason)
+    else:
+        position["active"] = False
+        position["amount"] = 0.0
+        position["closed_at"] = now_iso()
+        position["close_reason"] = reason
     save_state(state)
     logger.info("SELL_FILLED symbol=%s slot=%s amount=%.12f exit=%.12f pnl_pct=%+.4f reason=%s", SYMBOL, position.get("slot_id"), filled, avg, pnl_pct, reason)
 
