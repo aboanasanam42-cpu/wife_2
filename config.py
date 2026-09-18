@@ -156,7 +156,7 @@ class Config:
     LIVE_TRADING = (
         os.getenv(
             "LIVE_TRADING",
-            "false",
+            "true",
         )
         .strip()
         .lower()
