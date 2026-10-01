@@ -1,6 +1,6 @@
 name: MEXC Futures Worker CI
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
