@@ -1,7 +1,0 @@
-{
-  "name": "MEXC Trading Bot",
-  "description": "Automated 24/7 MEXC Spot Trading Bot with Python Railway deployment and live monitor.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
-
